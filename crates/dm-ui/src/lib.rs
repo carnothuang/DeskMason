@@ -1053,8 +1053,8 @@ impl qobject::AppState {
         let requested = layout_store::clamp_rect(dm_core::geometry::Rect::new(
             x,
             y,
-            w.max(120) as u32,
-            h.max(120) as u32,
+            w.max(160) as u32,
+            h.max(160) as u32,
         ));
         // 全局「松手留缝」：贴死在邻瓦边缘或主屏四边时统一退开
         // RELEASE_GAP。系统拖动由 KWin 直接改窗口位置，QML 的磁吸和
@@ -1237,8 +1237,8 @@ impl qobject::AppState {
         let rect = layout_store::clamp_rect(dm_core::geometry::Rect::new(
             x,
             y,
-            w.max(120) as u32,
-            h.max(120) as u32,
+            w.max(160) as u32,
+            h.max(160) as u32,
         ));
         let mut out = QStringList::default();
         out.append(QString::from(rect.x.to_string()));

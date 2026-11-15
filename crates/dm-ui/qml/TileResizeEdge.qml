@@ -1,11 +1,14 @@
 import QtQuick
 
-// 瓦片四边缩放边条 + 邻瓦边界磁吸。
+// 瓦片四边缩放边条 + 邻瓦/屏幕边界磁吸。
 //
-// 交互规则：
-// - 拉动瓦片的某条边，靠近其他瓦片的同轴边界（阈值 snapDist px）时，
-//   尺寸"卡"一下吸附到对齐位置——这就是用户要的"卡顿提示"；
-// - 吸附位置与邻瓦之间保留 snapGap px 的间隔，明确瓦片边界；
+// 交互规则（与拖动共用 TileSnap 引擎，规则完全一致）：
+// - 拉动瓦片的某条边，靠近其他瓦片的同轴边界（snapDist px 内）时，
+//   尺寸"卡"一下吸附到对齐位置——明显的阻尼感；
+// - 相对边（我的右边 vs 邻居左边）→ 吸附位置留 gap 缝（release_gap，
+//   与松手结算一致），明确瓦片边界；
+// - 同侧边（我的右边 vs 邻居右边）→ 精确对齐（列/行边界对齐）；
+// - 主屏四边 → 吸到屏边内侧 gap 处（与松手结算一致）；
 // - 吸附状态下继续拉动超过 unsnapDist px 才解除吸附（迟滞，避免抖动）。
 //
 // 邻居几何在按下时取一次快照（neighbor_rects invokable），拖动路径上
@@ -22,91 +25,50 @@ Item {
 
     readonly property int edgeSize: 8
     readonly property int snapDist: 10
-    // 相对边吸附留 40px（原 8px 的 5 倍），明确瓦片边界。
-    readonly property int snapGap: 40
-    // 任何时候都不允许两块瓦片靠得比 40px 更近，更不允许重叠。
-    readonly property int minGap: 40
-    readonly property int unsnapDist: 14
     readonly property int minSize: 160
 
-    // 邻瓦几何快照：[{x, y, w, h}, ...]
-    property var neighbors: []
-    // 吸附基准值（窗口坐标系）；-1 表示未吸附。H 是左右边（x 轴），V 是上下边。
-    property real snapH: -1
-    property real snapV: -1
+    // 统一磁吸引擎：拖动与缩放共用同一套规则与常量。
+    TileSnap {
+        id: snap
+        appState: root.appState
+    }
+
+    // 主屏可用区快照：按下时取一次 {x, y, w, h}；取不到则不算屏幕边。
+    property var screenArea: null
+
     property var startGeom: null
 
-    function refreshNeighbors() {
-        var list = []
-        if (appState && appState.neighbor_rects) {
-            var raw = appState.neighbor_rects()
-            for (var i = 0; i + 3 < raw.length; i += 4) {
-                list.push({
-                    x: parseFloat(raw[i]),
-                    y: parseFloat(raw[i + 1]),
-                    w: parseFloat(raw[i + 2]),
-                    h: parseFloat(raw[i + 3])
-                })
+    function refreshScreen() {
+        if (appState && appState.clamp_rect) {
+            var probe = appState.clamp_rect(0, 0, 100000, 100000)
+            root.screenArea = {
+                x: Number(probe[0]),
+                y: Number(probe[1]),
+                w: Number(probe[2]),
+                h: Number(probe[3])
             }
+        } else {
+            root.screenArea = null
         }
-        root.neighbors = list
     }
 
-    // 未吸附时找最近的邻瓦边界；超过 snapDist 返回 -1。
-    // side 是本瓦片正在拖动的边。规则：
-    // - 相对边（我的右边 vs 邻居左边）→ 吸附位置留 snapGap 间隔；
-    // - 同侧边（我的右边 vs 邻居右边）→ 精确对齐（列边界对齐）。
-    function findSnap(raw, axis, side) {
-        var best = -1
-        var bestDist = root.snapDist
-        for (var i = 0; i < root.neighbors.length; ++i) {
-            var n = root.neighbors[i]
-            var cands
-            if (axis === "h")
-                cands = (side === "right")
-                        ? [n.x - root.snapGap, n.x + n.w]
-                        : [n.x + n.w + root.snapGap, n.x]
-            else
-                cands = (side === "bottom")
-                        ? [n.y - root.snapGap, n.y + n.h]
-                        : [n.y + n.h + root.snapGap, n.y]
-            for (var j = 0; j < cands.length; ++j) {
-                var d = Math.abs(raw - cands[j])
-                if (d <= bestDist) {
-                    bestDist = d
-                    best = cands[j]
-                }
-            }
+    // 候选矩形侵入邻瓦 gap 安全区的最大深度；0 表示间隔达标。
+    // 安全区以运行时 gap 为准，与磁吸/松手结算一致。
+    function invade(x, y, w, h) {
+        var worst = 0
+        for (var i = 0; i < snap.neighbors.length; ++i) {
+            var n = snap.neighbors[i]
+            var dx = Math.min(x + w + snap.gap - n.x, n.x + n.w + snap.gap - x)
+            var dy = Math.min(y + h + snap.gap - n.y, n.y + n.h + snap.gap - y)
+            if (dx > 0 && dy > 0)
+                worst = Math.max(worst, Math.min(dx, dy))
         }
-        return best
-    }
-
-    // 带迟滞的吸附：吸附中先看是否仍在迟滞带内，出带再重新找。
-    function applySnap(raw, axis, side) {
-        var held = axis === "h" ? root.snapH : root.snapV
-        if (held >= 0) {
-            if (Math.abs(raw - held) <= root.unsnapDist)
-                return held
-            if (axis === "h")
-                root.snapH = -1
-            else
-                root.snapV = -1
-        }
-        var snapped = findSnap(raw, axis, side)
-        if (snapped >= 0) {
-            if (axis === "h")
-                root.snapH = snapped
-            else
-                root.snapV = snapped
-            return snapped
-        }
-        return raw
+        return worst
     }
 
     function beginDrag(gx, gy) {
-        root.refreshNeighbors()
-        root.snapH = -1
-        root.snapV = -1
+        snap.beginDrag()
+        root.refreshScreen()
         root.startGeom = {
             x: targetWindow.x,
             y: targetWindow.y,
@@ -123,26 +85,12 @@ Item {
 
     function endDrag() {
         root.startGeom = null
-        root.snapH = -1
-        root.snapV = -1
+        snap.endDrag()
         // 缩放结束同样走一次全局松手结算，规则与拖动完全一致。
         if (appState && appState.save_geometry && targetWindow) {
             appState.save_geometry(targetWindow.x, targetWindow.y,
                                    targetWindow.width, targetWindow.height)
         }
-    }
-
-    // 候选矩形侵入邻瓦 minGap 安全区的最大深度；0 表示间隔达标。
-    function invade(x, y, w, h) {
-        var worst = 0
-        for (var i = 0; i < root.neighbors.length; ++i) {
-            var n = root.neighbors[i]
-            var dx = Math.min(x + w + root.minGap - n.x, n.x + n.w + root.minGap - x)
-            var dy = Math.min(y + h + root.minGap - n.y, n.y + n.h + root.minGap - y)
-            if (dx > 0 && dy > 0)
-                worst = Math.max(worst, Math.min(dx, dy))
-        }
-        return worst
     }
 
     // 统一落位：先拒绝会让间隔变小的结果，再收进主屏可用区。
@@ -171,31 +119,34 @@ Item {
         if (!root.startGeom || !root.targetWindow)
             return
         var s = root.startGeom
-        var x = s.x
-        var y = s.y
-        var w = s.w
-        var h = s.h
 
         if (edge === "right") {
-            var rawEdge = s.x + s.w + (gx - s.gx)
-            w = Math.max(root.minSize, Math.round(applySnap(rawEdge, "h", "right") - s.x))
+            var rawRight = s.x + s.w + (gx - s.gx)
+            var right = snap.applySnap(rawRight, "h", "right", root.screenArea, root.snapDist)
+            var rw = Math.max(root.minSize, Math.round(right - s.x))
+            root.applyRect(s.x, s.y, rw, s.h)
         } else if (edge === "left") {
-            var right = s.x + s.w
+            var fixedRight = s.x + s.w
             var rawLeft = s.x + (gx - s.gx)
-            var left = Math.min(applySnap(rawLeft, "h", "left"), right - root.minSize)
-            x = Math.round(left)
-            w = Math.max(root.minSize, Math.round(right - left))
+            var left = Math.min(snap.applySnap(rawLeft, "h", "left", root.screenArea, root.snapDist),
+                                fixedRight - root.minSize)
+            var x = Math.round(left)
+            var lw = Math.max(root.minSize, Math.round(fixedRight - left))
+            root.applyRect(x, s.y, lw, s.h)
         } else if (edge === "bottom") {
             var rawBottom = s.y + s.h + (gy - s.gy)
-            h = Math.max(root.minSize, Math.round(applySnap(rawBottom, "v", "bottom") - s.y))
+            var bottom = snap.applySnap(rawBottom, "v", "bottom", root.screenArea, root.snapDist)
+            var bh = Math.max(root.minSize, Math.round(bottom - s.y))
+            root.applyRect(s.x, s.y, s.w, bh)
         } else if (edge === "top") {
-            var bottom = s.y + s.h
+            var fixedBottom = s.y + s.h
             var rawTop = s.y + (gy - s.gy)
-            var top = Math.min(applySnap(rawTop, "v", "top"), bottom - root.minSize)
-            y = Math.round(top)
-            h = Math.max(root.minSize, Math.round(bottom - top))
+            var top = Math.min(snap.applySnap(rawTop, "v", "top", root.screenArea, root.snapDist),
+                               fixedBottom - root.minSize)
+            var y = Math.round(top)
+            var th = Math.max(root.minSize, Math.round(fixedBottom - top))
+            root.applyRect(s.x, y, s.w, th)
         }
-        root.applyRect(x, y, w, h)
     }
 
     // ------------------------------------------------------------ 四条边

@@ -325,8 +325,9 @@ ApplicationWindow {
         border.width: window.dropHighlight ? 2 : 1
         border.color: window.dropHighlight ? Theme.accentBorder : Theme.border
 
-        // 顶部拖动把手：桌面层窗口窗管不管移动。
+        // 顶部拖动把手：磁吸拖动的唯一实现，标题行按住也路由到这里。
         WindowDragEdge {
+            id: titleDragHandle
             targetWindow: window
             appState: app
         }
@@ -379,36 +380,23 @@ ApplicationWindow {
                 Layout.fillWidth: true
                 spacing: 6
 
-                // 按住标题/空白拖动整个瓦片：优先 KWin 原生拖动（不卡顿），
-                // 窗管不接手时退回手动改坐标。
+                // 按住标题/空白拖动整个瓦片：与顶部把手共用同一套
+                // 磁吸拖动（WindowDragEdge 的公共 API），行为与所有瓦片一致。
                 MouseArea {
                     id: windowDrag
                     Layout.fillWidth: true
                     cursorShape: Qt.SizeAllCursor
-                    property bool systemMove: false
-                    property real pressX: 0
-                    property real pressY: 0
-                    property real winX: 0
-                    property real winY: 0
+
                     onPressed: function (mouse) {
-                        systemMove = app.start_move()
-                        if (systemMove)
-                            return
                         var g = mapToItem(null, mouse.x, mouse.y)
-                        pressX = g.x
-                        pressY = g.y
-                        winX = window.x
-                        winY = window.y
+                        titleDragHandle.dragBegin(g.x, g.y)
                     }
                     onReleased: function (mouse) {
-                        systemMove = false
+                        titleDragHandle.dragEnd()
                     }
                     onPositionChanged: function (mouse) {
-                        if (!pressed || systemMove)
-                            return
                         var g = mapToItem(null, mouse.x, mouse.y)
-                        window.x = Math.round(winX + g.x - pressX)
-                        window.y = Math.round(winY + g.y - pressY)
+                        titleDragHandle.dragMove(g.x, g.y)
                     }
                 }
 

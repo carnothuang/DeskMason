@@ -10,6 +10,7 @@ fn main() {
         QmlFile::from("qml/FolderPicker.qml"),
         QmlFile::from("qml/NewFileTileDialog.qml"),
         QmlFile::from("qml/WindowDragEdge.qml"),
+        QmlFile::from("qml/TileSnap.qml"),
         QmlFile::from("qml/TileResizeEdge.qml"),
         QmlFile::from("qml/settings.qml"),
         QmlFile::from("qml/placeholder.qml"),

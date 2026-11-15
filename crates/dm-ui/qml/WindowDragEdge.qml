@@ -1,21 +1,27 @@
 import QtQuick
 
 // 桌面层瓦片窗口的拖动边条：窗口顶部 8px 高的隐形把手。
-// 优先交给窗口管理器原生拖动（startSystemMove）：KWin 按指针同步移动，
-// 帧率与桌面一致，不会一顿一顿。窗管不接手（返回 false）时退回
-// 手动改 window.x/y——桌面层窗口 KWin 也可能不响应 moveresize。
+//
+// 拖动一律手动改 window.x/y（不走 startSystemMove）：磁吸要求逐帧
+// 拦截坐标，系统拖动由窗管直接改窗口位置，QML 拦不住。
+// 磁吸规则统一来自 TileSnap：
+// - 窗口任意一条边靠近邻瓦同轴边界（snapDist px 内）→ 吸附：
+//   相对边留 gap 缝，同侧边精确对齐，屏幕四边吸到屏边内侧 gap 处；
+// - 吸附中继续拉动超过迟滞带才解除（阻尼感 + 防抖动）。
+// 松手立即 save_geometry：Rust 侧 settle_rect 再做一次全局留缝结算
+// （与磁吸落位一致，正常情况不会改动），geometryTimer 兜底防抖落盘。
 MouseArea {
     id: root
 
     // 拖动目标窗口（ApplicationWindow 的 id）。
     property var targetWindow
-    // AppState 实例（start_move invokable 所在对象），由实例化处传入。
+    // AppState 实例（neighbor_rects / release_gap / clamp_rect invokable 所在对象）。
     property var appState
-    // 拖动进行中（两种方式共用；外部 geometryTimer 落盘位置）。
+    // 拖动进行中（外部 geometryTimer 落盘位置）。
     property bool dragging: false
-    // startSystemMove 已被窗管接手；此后 QML 不再手动改坐标。
-    property bool systemMove: false
-    // z 值：放在内容之下时用低值；边条默认盖在最上。
+    // 磁吸距离：窗口边进入候选边 snapDist px 内触发吸附。
+    readonly property int snapDist: 10
+    // z 值：边条默认盖在最上。
     z: 100
     cursorShape: Qt.SizeAllCursor
     height: 8
@@ -23,42 +29,84 @@ MouseArea {
     anchors.left: parent.left
     anchors.right: parent.right
 
+    // 统一磁吸引擎：拖动与缩放共用同一套规则与常量。
+    TileSnap {
+        id: snap
+        appState: root.appState
+    }
+
+    // 主屏可用区快照：按下时取一次 {x, y, w, h}；取不到则不算屏幕边。
+    property var screenArea: null
+
     property real pressX: 0
     property real pressY: 0
     property real winX: 0
     property real winY: 0
 
-    onPressed: function (mouse) {
-        dragging = true
-        systemMove = false
-        // 先问宿主能否走 KWin 原生拖动；失败再手动来。
-        if (appState && appState.start_move && appState.start_move()) {
-            systemMove = true
-            return
+    function refreshScreen() {
+        if (appState && appState.clamp_rect) {
+            // 用一个超大矩形问主屏可用区：clamp_rect 会把它收进区内，
+            // 返回的 x/y/w/h 就是可用区本身。
+            var probe = appState.clamp_rect(0, 0, 100000, 100000)
+            root.screenArea = {
+                x: Number(probe[0]),
+                y: Number(probe[1]),
+                w: Number(probe[2]),
+                h: Number(probe[3])
+            }
+        } else {
+            root.screenArea = null
         }
-        var g = mapToItem(null, mouse.x, mouse.y)
-        pressX = g.x
-        pressY = g.y
+    }
+
+    // 拖动时窗口四条边都可能对齐。每条边各自吸附（迟滞状态互相独立）；
+    // 同轴两条边同时命中时取位移更近的一条，另一条跟着平移。
+    function applyMoveSnap(rawLeft, rawTop, w, h) {
+        var xLeft = snap.applySnap(rawLeft, "h", "left", root.screenArea, root.snapDist)
+        var xRight = snap.applySnap(rawLeft + w, "h", "right", root.screenArea, root.snapDist)
+        var nx = rawLeft
+        if (xLeft !== rawLeft && xRight === rawLeft + w)
+            nx = xLeft
+        else if (xRight !== rawLeft + w && xLeft === rawLeft)
+            nx = xRight - w
+        else if (xLeft !== rawLeft && xRight !== rawLeft + w)
+            nx = Math.abs(xLeft - rawLeft) <= Math.abs(xRight - rawLeft - w) ? xLeft : xRight - w
+
+        var yTop = snap.applySnap(rawTop, "v", "top", root.screenArea, root.snapDist)
+        var yBottom = snap.applySnap(rawTop + h, "v", "bottom", root.screenArea, root.snapDist)
+        var ny = rawTop
+        if (yTop !== rawTop && yBottom === rawTop + h)
+            ny = yTop
+        else if (yBottom !== rawTop + h && yTop === rawTop)
+            ny = yBottom - h
+        else if (yTop !== rawTop && yBottom !== rawTop + h)
+            ny = Math.abs(yTop - rawTop) <= Math.abs(yBottom - rawTop - h) ? yTop : yBottom - h
+
+        return { x: nx, y: ny }
+    }
+
+    // ------------------------------------------------------------ 公共拖动 API
+    // 把手自身的 MouseArea 与标题行代理（main.qml）都走这三个函数，
+    // gx/gy 是全局屏幕坐标。
+
+    function dragBegin(gx, gy) {
+        dragging = true
+        snap.beginDrag()
+        root.refreshScreen()
+        pressX = gx
+        pressY = gy
         winX = targetWindow.x
         winY = targetWindow.y
     }
-    onReleased: function (mouse) {
-        dragging = false
-        systemMove = false
-        // 松手立刻做一次全局「松手留缝」结算：贴住邻瓦或屏幕边缘时
-        // 由 Rust 侧统一退开 RELEASE_GAP。系统拖动被 KWin 接管时这里
-        // 可能收不到释放事件，由窗口的 geometryTimer 兜底再结算一次。
-        if (appState && appState.save_geometry) {
-            appState.save_geometry(targetWindow.x, targetWindow.y,
-                                   targetWindow.width, targetWindow.height)
-        }
-    }
-    onPositionChanged: function (mouse) {
-        if (!pressed || systemMove)
+
+    function dragMove(gx, gy) {
+        if (!dragging)
             return
-        var g = mapToItem(null, mouse.x, mouse.y)
-        var nx = Math.round(winX + g.x - pressX)
-        var ny = Math.round(winY + g.y - pressY)
+        var rawX = winX + gx - pressX
+        var rawY = winY + gy - pressY
+        var snapped = applyMoveSnap(rawX, rawY, targetWindow.width, targetWindow.height)
+        var nx = Math.round(snapped.x)
+        var ny = Math.round(snapped.y)
         // 双屏场景：手动拖动也只允许停在主屏范围内。
         if (appState && appState.clamp_rect) {
             var fixed = appState.clamp_rect(nx, ny, targetWindow.width, targetWindow.height)
@@ -67,5 +115,34 @@ MouseArea {
         }
         targetWindow.x = nx
         targetWindow.y = ny
+    }
+
+    function dragEnd() {
+        if (!dragging)
+            return
+        dragging = false
+        snap.endDrag()
+        // 松手立刻做一次全局「松手留缝」结算；磁吸落位与结算一致，
+        // 正常不会再挪。系统层兜底见窗口 geometryTimer。
+        if (appState && appState.save_geometry) {
+            appState.save_geometry(targetWindow.x, targetWindow.y,
+                                   targetWindow.width, targetWindow.height)
+        }
+    }
+
+    // ------------------------------------------------------------ 把手自身事件
+
+    onPressed: function (mouse) {
+        var g = mapToItem(null, mouse.x, mouse.y)
+        root.dragBegin(g.x, g.y)
+    }
+    onReleased: function (mouse) {
+        root.dragEnd()
+    }
+    onPositionChanged: function (mouse) {
+        if (!pressed)
+            return
+        var g = mapToItem(null, mouse.x, mouse.y)
+        root.dragMove(g.x, g.y)
     }
 }
