@@ -1,0 +1,21 @@
+[package]
+name = "dm-platform"
+description = "DeskMason 平台层：X11 / Wayland / D-Bus 能力的唯一入口"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+dm-core = { path = "../dm-core" }
+thiserror = { workspace = true }
+x11rb = { workspace = true, features = ["randr"] }
+notify = "8"
+dirs = "7"
+serde = { workspace = true }
+serde_json = { workspace = true }
+ksni = { version = "0.3", features = ["blocking"] }
+ureq = "3"
+rusqlite = { version = "0.42", features = ["bundled"] }
+zbus = { version = "4", default-features = false, features = ["tokio"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }

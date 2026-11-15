@@ -1,0 +1,29 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/dm-core",
+    "crates/dm-platform",
+    "crates/dm-shell",
+    "crates/dm-ui",
+    "crates/dm-app",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+rust-version = "1.85"
+authors = ["Simon <1047078635@qq.com>"]
+
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+anyhow = "1"
+x11rb = { version = "0.13", features = ["randr"] }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+panic = "abort"
+strip = "symbols"

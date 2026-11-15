@@ -1,0 +1,12 @@
+[Desktop Entry]
+Type=Application
+Name=DeskMason
+Name[zh_CN]=桌面瓦匠
+Comment=Desktop tiles for Deepin
+Comment[zh_CN]=Deepin 桌面瓦片
+Exec=deskmason
+Icon=deskmason
+Terminal=false
+Categories=Utility;FileTools;
+Keywords=desktop;tile;widget;files;
+StartupNotify=false

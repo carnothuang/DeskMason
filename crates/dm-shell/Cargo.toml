@@ -1,0 +1,16 @@
+[package]
+name = "dm-shell"
+description = "DeskMason 宿主进程"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "deskmason"
+path = "src/main.rs"
+
+[dependencies]
+dm-core = { path = "../dm-core" }
+dm-platform = { path = "../dm-platform" }
+anyhow = { workspace = true }

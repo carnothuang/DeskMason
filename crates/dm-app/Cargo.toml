@@ -1,0 +1,16 @@
+[package]
+name = "dm-app"
+description = "DeskMason 桌面进程入口（QML 界面）"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "deskmason-ui"
+path = "src/main.rs"
+
+[dependencies]
+dm-ui = { path = "../dm-ui" }
+cxx-qt = "0.10"
+cxx-qt-lib = { version = "0.10", features = ["qt_gui", "qt_qml"] }
