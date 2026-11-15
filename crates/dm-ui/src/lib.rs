@@ -466,6 +466,11 @@ mod qobject {
         /// QML 拖动 / 缩放边条从这里读，避免各处写死魔法数字。
         #[qinvokable]
         fn release_gap(&self) -> i32;
+
+        /// 全局指针坐标（屏幕坐标，含多屏负值）。磁吸拖动必须用与窗口
+        /// 位置无关的坐标，否则窗口一动场景坐标跟着变，形成反馈回路。
+        #[qinvokable]
+        fn cursor_pos(&self) -> QStringList;
     }
 }
 
@@ -1280,6 +1285,15 @@ impl qobject::AppState {
 
     fn release_gap(&self) -> i32 {
         layout_store::RELEASE_GAP
+    }
+
+    fn cursor_pos(&self) -> QStringList {
+        let mut out = [0i32; 2];
+        unsafe { dm_cursor_pos(out.as_mut_ptr()) };
+        let mut list = QStringList::default();
+        list.append(QString::from(out[0].to_string()));
+        list.append(QString::from(out[1].to_string()));
+        list
     }
 
     fn take_host_command(&self) -> QString {
@@ -2682,6 +2696,10 @@ extern "C" {
     /// 由 C++ 胶水实现：对瓦片窗口发起窗口管理器原生拖动。
     /// 返回 false 表示窗管不接手（QML 退回手动拖动）。
     fn dm_start_system_move(widget_id: *const core::ffi::c_char) -> bool;
+
+    /// 由 C++ 胶水实现：QCursor::pos() 的全局屏幕坐标，写入 out 参数
+    /// （out[0]=x, out[1]=y）。元组不是 FFI 安全类型，用指针回传。
+    fn dm_cursor_pos(out: *mut i32);
 }
 
 /// C++ 胶水回调：把原生窗口固定回 below 层（BELOW 状态 + restack）。

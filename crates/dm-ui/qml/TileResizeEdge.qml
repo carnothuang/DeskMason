@@ -38,6 +38,17 @@ Item {
 
     property var startGeom: null
 
+    // 全局指针坐标（屏幕坐标）。与 WindowDragEdge 同一参考系铁律：
+    // 场景坐标会随窗口移动而变化，不能用于几何增量计算。
+    function cursor() {
+        if (appState && appState.cursor_pos) {
+            var p = appState.cursor_pos()
+            return { x: Number(p[0]), y: Number(p[1]) }
+        }
+        // 兜底：理论上不会走到（拖右/底边窗口不动时等价）。
+        return { x: 0, y: 0 }
+    }
+
     function refreshScreen() {
         if (appState && appState.clamp_rect) {
             var probe = appState.clamp_rect(0, 0, 100000, 100000)
@@ -66,16 +77,17 @@ Item {
         return worst
     }
 
-    function beginDrag(gx, gy) {
+    function beginDrag() {
         snap.beginDrag()
         root.refreshScreen()
+        var g = root.cursor()
         root.startGeom = {
             x: targetWindow.x,
             y: targetWindow.y,
             w: targetWindow.width,
             h: targetWindow.height,
-            gx: gx,
-            gy: gy,
+            gx: g.x,
+            gy: g.y,
             // 按下瞬间的"侵入深度"：允许把已有的过近间隔拉宽，
             // 但不允许比按下时更挤，也不允许叠到一起。
             invade: root.invade(targetWindow.x, targetWindow.y,
@@ -150,6 +162,8 @@ Item {
     }
 
     // ------------------------------------------------------------ 四条边
+    // 指针坐标一律用 root.cursor()（全局屏幕坐标，与窗口位置无关）；
+    // 场景坐标在窗口自身移动时会污染增量计算。
 
     MouseArea {
         anchors.right: parent.right
@@ -158,13 +172,12 @@ Item {
         width: root.edgeSize
         cursorShape: Qt.SizeHorCursor
         onPressed: function (mouse) {
-            var g = mapToItem(null, mouse.x, mouse.y)
-            root.beginDrag(g.x, g.y)
+            root.beginDrag()
         }
         onPositionChanged: function (mouse) {
             if (!pressed)
                 return
-            var g = mapToItem(null, mouse.x, mouse.y)
+            var g = root.cursor()
             root.drag("right", g.x, g.y)
         }
         onReleased: root.endDrag()
@@ -177,13 +190,12 @@ Item {
         width: root.edgeSize
         cursorShape: Qt.SizeHorCursor
         onPressed: function (mouse) {
-            var g = mapToItem(null, mouse.x, mouse.y)
-            root.beginDrag(g.x, g.y)
+            root.beginDrag()
         }
         onPositionChanged: function (mouse) {
             if (!pressed)
                 return
-            var g = mapToItem(null, mouse.x, mouse.y)
+            var g = root.cursor()
             root.drag("left", g.x, g.y)
         }
         onReleased: root.endDrag()
@@ -196,13 +208,12 @@ Item {
         height: root.edgeSize
         cursorShape: Qt.SizeVerCursor
         onPressed: function (mouse) {
-            var g = mapToItem(null, mouse.x, mouse.y)
-            root.beginDrag(g.x, g.y)
+            root.beginDrag()
         }
         onPositionChanged: function (mouse) {
             if (!pressed)
                 return
-            var g = mapToItem(null, mouse.x, mouse.y)
+            var g = root.cursor()
             root.drag("bottom", g.x, g.y)
         }
         onReleased: root.endDrag()
@@ -216,13 +227,12 @@ Item {
         height: root.edgeSize
         cursorShape: Qt.SizeVerCursor
         onPressed: function (mouse) {
-            var g = mapToItem(null, mouse.x, mouse.y)
-            root.beginDrag(g.x, g.y)
+            root.beginDrag()
         }
         onPositionChanged: function (mouse) {
             if (!pressed)
                 return
-            var g = mapToItem(null, mouse.x, mouse.y)
+            var g = root.cursor()
             root.drag("top", g.x, g.y)
         }
         onReleased: root.endDrag()

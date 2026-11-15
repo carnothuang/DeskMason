@@ -77,17 +77,19 @@ QtObject {
                 }
             }
         }
-        // 主屏四边：吸到屏边内侧 gap 处，与松手结算的落位一致。
+        // 主屏四边：每条边只吸自己方向的那一侧（与松手结算落位一致，
+        // 结算把贴边瓦片退到屏边内侧 gap 处）。这里吸的是"边位置"：
+        // 左边吸到 left + gap，右边吸到 right - gap，上下同理。
         if (screen) {
             var screenCands
             if (axis === "h") {
                 screenCands = (side === "right")
-                        ? [screen.x + screen.w - root.gap - 1, screen.x + root.gap]
-                        : [screen.x + root.gap, screen.x + screen.w - root.gap - 1]
+                        ? [screen.x + screen.w - root.gap]
+                        : [screen.x + root.gap]
             } else {
                 screenCands = (side === "bottom")
-                        ? [screen.y + screen.h - root.gap - 1, screen.y + root.gap]
-                        : [screen.y + root.gap, screen.y + screen.h - root.gap - 1]
+                        ? [screen.y + screen.h - root.gap]
+                        : [screen.y + root.gap]
             }
             for (var k = 0; k < screenCands.length; ++k) {
                 var ds = Math.abs(raw - screenCands[k])

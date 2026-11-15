@@ -4,6 +4,11 @@ import QtQuick
 //
 // 拖动一律手动改 window.x/y（不走 startSystemMove）：磁吸要求逐帧
 // 拦截坐标，系统拖动由窗管直接改窗口位置，QML 拦不住。
+// 参考系铁律：指针坐标必须用 appState.cursor_pos()（QCursor::pos，
+// 屏幕全局坐标）。QML 的 mapToItem(null) 给的是窗口内场景坐标，
+// 窗口一动场景坐标跟着变——拿它当全局坐标会形成"窗口动 → 坐标变
+// → 目标位置变"的反馈回路：拖动以一半速度跟手并振荡（鬼畜），
+// 撞上 clamp 后误差被整段甩出，瓦片会被钉到屏幕角落。
 // 磁吸规则统一来自 TileSnap：
 // - 窗口任意一条边靠近邻瓦同轴边界（snapDist px 内）→ 吸附：
 //   相对边留 gap 缝，同侧边精确对齐，屏幕四边吸到屏边内侧 gap 处；
@@ -38,6 +43,7 @@ MouseArea {
     // 主屏可用区快照：按下时取一次 {x, y, w, h}；取不到则不算屏幕边。
     property var screenArea: null
 
+    // 按下时刻的全局指针坐标与窗口位置（参考系原点，此后只算增量）。
     property real pressX: 0
     property real pressY: 0
     property real winX: 0
@@ -57,6 +63,17 @@ MouseArea {
         } else {
             root.screenArea = null
         }
+    }
+
+    // 全局指针坐标；cursor_pos 不可用时退回事件坐标（仅单屏且窗口
+    // 不动时等价，实际不会走到）。
+    function globalCursor(mouse) {
+        if (appState && appState.cursor_pos) {
+            var p = appState.cursor_pos()
+            return { x: Number(p[0]), y: Number(p[1]) }
+        }
+        var g = mapToItem(null, mouse.x, mouse.y)
+        return { x: g.x, y: g.y }
     }
 
     // 拖动时窗口四条边都可能对齐。每条边各自吸附（迟滞状态互相独立）；
@@ -86,24 +103,25 @@ MouseArea {
     }
 
     // ------------------------------------------------------------ 公共拖动 API
-    // 把手自身的 MouseArea 与标题行代理（main.qml）都走这三个函数，
-    // gx/gy 是全局屏幕坐标。
+    // 把手自身的 MouseArea 与标题行代理（main.qml）都走这三个函数。
 
-    function dragBegin(gx, gy) {
+    function dragBegin() {
         dragging = true
         snap.beginDrag()
         root.refreshScreen()
-        pressX = gx
-        pressY = gy
+        var cur = root.globalCursor(null)
+        pressX = cur.x
+        pressY = cur.y
         winX = targetWindow.x
         winY = targetWindow.y
     }
 
-    function dragMove(gx, gy) {
+    function dragMove() {
         if (!dragging)
             return
-        var rawX = winX + gx - pressX
-        var rawY = winY + gy - pressY
+        var cur = root.globalCursor(null)
+        var rawX = winX + cur.x - pressX
+        var rawY = winY + cur.y - pressY
         var snapped = applyMoveSnap(rawX, rawY, targetWindow.width, targetWindow.height)
         var nx = Math.round(snapped.x)
         var ny = Math.round(snapped.y)
@@ -133,8 +151,7 @@ MouseArea {
     // ------------------------------------------------------------ 把手自身事件
 
     onPressed: function (mouse) {
-        var g = mapToItem(null, mouse.x, mouse.y)
-        root.dragBegin(g.x, g.y)
+        root.dragBegin()
     }
     onReleased: function (mouse) {
         root.dragEnd()
@@ -142,7 +159,6 @@ MouseArea {
     onPositionChanged: function (mouse) {
         if (!pressed)
             return
-        var g = mapToItem(null, mouse.x, mouse.y)
-        root.dragMove(g.x, g.y)
+        root.dragMove()
     }
 }

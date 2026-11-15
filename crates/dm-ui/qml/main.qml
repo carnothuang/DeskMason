@@ -382,21 +382,20 @@ ApplicationWindow {
 
                 // 按住标题/空白拖动整个瓦片：与顶部把手共用同一套
                 // 磁吸拖动（WindowDragEdge 的公共 API），行为与所有瓦片一致。
+                // 指针坐标由把手内部取全局 QCursor::pos，这里只转发事件。
                 MouseArea {
                     id: windowDrag
                     Layout.fillWidth: true
                     cursorShape: Qt.SizeAllCursor
 
                     onPressed: function (mouse) {
-                        var g = mapToItem(null, mouse.x, mouse.y)
-                        titleDragHandle.dragBegin(g.x, g.y)
+                        titleDragHandle.dragBegin()
                     }
                     onReleased: function (mouse) {
                         titleDragHandle.dragEnd()
                     }
                     onPositionChanged: function (mouse) {
-                        var g = mapToItem(null, mouse.x, mouse.y)
-                        titleDragHandle.dragMove(g.x, g.y)
+                        titleDragHandle.dragMove()
                     }
                 }
 

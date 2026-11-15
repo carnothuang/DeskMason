@@ -6,6 +6,7 @@
 // - cxx-qt-lib 0.10 没有 QWindow / QQmlComponent / rootObjects 绑定。
 
 #include <QClipboard>
+#include <QCursor>
 #include <QPalette>
 #include <QQuickStyle>
 #include <QCoreApplication>
@@ -243,6 +244,14 @@ extern "C" void dm_close_tile(const char *widget_id) {
         window->close();
         window->deleteLater();
     }
+}
+
+// 全局指针坐标（屏幕坐标）。磁吸拖动的参考系必须与窗口位置无关，
+// QML mapToItem(null) 给的是窗口内场景坐标，窗口一动它就跟着变。
+extern "C" void dm_cursor_pos(int *out) {
+    const QPoint p = QCursor::pos();
+    out[0] = p.x();
+    out[1] = p.y();
 }
 
 // 对指定窗口发起窗口管理器原生拖动（_NET_WM_MOVERESIZE，客户端发起）。
