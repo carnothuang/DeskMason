@@ -8,7 +8,7 @@ import QtQuick
 // - 相对边（我的右边 vs 邻居左边）→ 吸附位置留 gap 缝（release_gap，
 //   与松手结算一致），明确瓦片边界；
 // - 同侧边（我的右边 vs 邻居右边）→ 精确对齐（列/行边界对齐）；
-// - 主屏四边 → 吸到屏边内侧 gap 处（与松手结算一致）；
+// - 瓦片所在屏四边 → 吸到屏边内侧 gap 处（与松手结算一致）；
 // - 吸附状态下继续拉动超过 unsnapDist px 才解除吸附（迟滞，避免抖动）。
 //
 // 邻居几何在按下时取一次快照（neighbor_rects invokable），拖动路径上
@@ -33,7 +33,8 @@ Item {
         appState: root.appState
     }
 
-    // 主屏可用区快照：按下时取一次 {x, y, w, h}；取不到则不算屏幕边。
+    // 全部屏幕可用区快照：按下时取一次 [{x, y, w, h}, ...]；取不到则不算
+    // 屏幕边。钳制线取瓦片中心所在的屏（多屏布局合法）。
     property var screenArea: null
 
     property var startGeom: null
@@ -50,35 +51,104 @@ Item {
     }
 
     function refreshScreen() {
-        if (appState && appState.clamp_rect) {
-            var probe = appState.clamp_rect(0, 0, 100000, 100000)
-            root.screenArea = {
-                x: Number(probe[0]),
-                y: Number(probe[1]),
-                w: Number(probe[2]),
-                h: Number(probe[3])
+        if (appState && appState.screen_rects) {
+            var raw = appState.screen_rects()
+            var list = []
+            for (var i = 0; i + 3 < raw.length; i += 4) {
+                list.push({
+                    x: Number(raw[i]),
+                    y: Number(raw[i + 1]),
+                    w: Number(raw[i + 2]),
+                    h: Number(raw[i + 3])
+                })
             }
+            root.screenArea = list
         } else {
             root.screenArea = null
         }
     }
 
-    // 候选矩形侵入邻瓦 gap 安全区的最大深度；0 表示间隔达标。
-    // 安全区以运行时 gap 为准，与磁吸/松手结算一致。
-    function invade(x, y, w, h) {
-        var worst = 0
+    // 瓦片中心所在的屏（钳制线与屏幕边吸附都针对它）。
+    // 找不到（screenArea 为空）返回 null。
+    function homeScreen() {
+        if (!root.screenArea || root.screenArea.length === 0)
+            return null
+        var s = root.startGeom
+        var cx = s.x + s.w / 2
+        var cy = s.y + s.h / 2
+        for (var i = 0; i < root.screenArea.length; ++i) {
+            var area = root.screenArea[i]
+            if (cx >= area.x && cx < area.x + area.w
+                    && cy >= area.y && cy < area.y + area.h)
+                return area
+        }
+        // 都不包含时取中心最近的一块。
+        var best = null
+        var bestDist = Infinity
+        for (var j = 0; j < root.screenArea.length; ++j) {
+            var sc = root.screenArea[j]
+            var dx = sc.x + sc.w / 2 - cx
+            var dy = sc.y + sc.h / 2 - cy
+            var d = dx * dx + dy * dy
+            if (d < bestDist) {
+                bestDist = d
+                best = sc
+            }
+        }
+        return best
+    }
+
+    // 拉动某条边时，该边允许到达的硬上限（缝隙线）：越过即钉死。
+    //
+    // 规则：我的被拖边 + gap 不得越过任何"同轴相对"的邻居边。
+    // 以拉底边为例：下方邻居的顶边是硬上限 → 被拖边 ≤ 邻居顶边 - gap。
+    // 只有横向（拉底/顶边时）或纵向（拉左/右边时）投影与邻居有交集的
+    // 才算同轴邻居——斜对角的瓦片不限制。
+    // 钳制线过近导致尺寸会低于 minSize 时放弃该条钳制（宁可越线，
+    // 不把瓦片压瘪；邻居极近时磁吸早把边吸走了，这里是最后防线）。
+    // screenGap 是屏幕边的钳制线（settle 结算的落位，恒 ≥ minSize 可达）。
+    function clampFor(edge, screenGap) {
+        var s = root.startGeom
+        var result = screenGap
         for (var i = 0; i < snap.neighbors.length; ++i) {
             var n = snap.neighbors[i]
-            var dx = Math.min(x + w + snap.gap - n.x, n.x + n.w + snap.gap - x)
-            var dy = Math.min(y + h + snap.gap - n.y, n.y + n.h + snap.gap - y)
-            if (dx > 0 && dy > 0)
-                worst = Math.max(worst, Math.min(dx, dy))
+            if (edge === "bottom") {
+                // 纵向投影有交集的邻居才限制我的底边。
+                if (s.x < n.x + n.w && n.x < s.x + s.w
+                        && n.y >= s.y + s.h - 1 && n.y < result)
+                    result = n.y - snap.gap
+            } else if (edge === "top") {
+                if (s.x < n.x + n.w && n.x < s.x + s.w
+                        && n.y + n.h <= s.y + 1 && n.y + n.h > result)
+                    result = n.y + n.h + snap.gap
+            } else if (edge === "right") {
+                if (s.y < n.y + n.h && n.y < s.y + s.h
+                        && n.x >= s.x + s.w - 1 && n.x < result)
+                    result = n.x - snap.gap
+            } else if (edge === "left") {
+                if (s.y < n.y + n.h && n.y < s.y + s.h
+                        && n.x + n.w <= s.x + 1 && n.x + n.w > result)
+                    result = n.x + n.w + snap.gap
+            }
         }
-        return worst
+        return result
+    }
+
+    // 该方向的钳制线是否会与 minSize 冲突（钳制后尺寸不足）。
+    function clampReachable(edge, line) {
+        var s = root.startGeom
+        if (edge === "bottom")
+            return line - s.y >= root.minSize
+        if (edge === "top")
+            return s.y + s.h - line >= root.minSize
+        if (edge === "right")
+            return line - s.x >= root.minSize
+        return s.x + s.w - line >= root.minSize
     }
 
     function beginDrag() {
-        snap.beginDrag()
+        snap.beginDrag(targetWindow.x + targetWindow.width / 2,
+                       targetWindow.y + targetWindow.height / 2)
         root.refreshScreen()
         var g = root.cursor()
         root.startGeom = {
@@ -87,11 +157,7 @@ Item {
             w: targetWindow.width,
             h: targetWindow.height,
             gx: g.x,
-            gy: g.y,
-            // 按下瞬间的"侵入深度"：允许把已有的过近间隔拉宽，
-            // 但不允许比按下时更挤，也不允许叠到一起。
-            invade: root.invade(targetWindow.x, targetWindow.y,
-                                targetWindow.width, targetWindow.height)
+            gy: g.y
         }
     }
 
@@ -105,10 +171,8 @@ Item {
         }
     }
 
-    // 统一落位：先拒绝会让间隔变小的结果，再收进主屏可用区。
+    // 统一落位：收进屏幕集合（任一块屏内都合法）后写回窗口。
     function applyRect(x, y, w, h) {
-        if (!root.startGeom || root.invade(x, y, w, h) > root.startGeom.invade)
-            return
         var fx = x
         var fy = y
         var fw = w
@@ -126,35 +190,50 @@ Item {
         root.targetWindow.height = fh
     }
 
-    // edge: "left" / "right" / "top" / "bottom"；gx/gy 是全局指针坐标。
+    // edge: "left" / "right" / "top" / "bottom"。
+    // 被拖边 = min(指针目标, 钳制线)——强制缝隙规则：越过邻居缝隙线
+    // 即钉死在缝隙位置（尺寸被强制缩短），而不是冻结在最后一帧。
     function drag(edge, gx, gy) {
         if (!root.startGeom || !root.targetWindow)
             return
         var s = root.startGeom
+        var screen = root.homeScreen()
 
         if (edge === "right") {
             var rawRight = s.x + s.w + (gx - s.gx)
             var right = snap.applySnap(rawRight, "h", "right", root.screenArea, root.snapDist)
+            var limit = root.clampFor("right", screen ? screen.x + screen.w - snap.gap : right)
+            if (right > limit && root.clampReachable("right", limit))
+                right = limit
             var rw = Math.max(root.minSize, Math.round(right - s.x))
             root.applyRect(s.x, s.y, rw, s.h)
         } else if (edge === "left") {
             var fixedRight = s.x + s.w
             var rawLeft = s.x + (gx - s.gx)
-            var left = Math.min(snap.applySnap(rawLeft, "h", "left", root.screenArea, root.snapDist),
-                                fixedRight - root.minSize)
+            var left = snap.applySnap(rawLeft, "h", "left", root.screenArea, root.snapDist)
+            var limitL = root.clampFor("left", screen ? screen.x + snap.gap : left)
+            if (left < limitL && root.clampReachable("left", limitL))
+                left = limitL
+            left = Math.min(left, fixedRight - root.minSize)
             var x = Math.round(left)
             var lw = Math.max(root.minSize, Math.round(fixedRight - left))
             root.applyRect(x, s.y, lw, s.h)
         } else if (edge === "bottom") {
             var rawBottom = s.y + s.h + (gy - s.gy)
             var bottom = snap.applySnap(rawBottom, "v", "bottom", root.screenArea, root.snapDist)
+            var limitB = root.clampFor("bottom", screen ? screen.y + screen.h - snap.gap : bottom)
+            if (bottom > limitB && root.clampReachable("bottom", limitB))
+                bottom = limitB
             var bh = Math.max(root.minSize, Math.round(bottom - s.y))
             root.applyRect(s.x, s.y, s.w, bh)
         } else if (edge === "top") {
             var fixedBottom = s.y + s.h
             var rawTop = s.y + (gy - s.gy)
-            var top = Math.min(snap.applySnap(rawTop, "v", "top", root.screenArea, root.snapDist),
-                               fixedBottom - root.minSize)
+            var top = snap.applySnap(rawTop, "v", "top", root.screenArea, root.snapDist)
+            var limitT = root.clampFor("top", screen ? screen.y + snap.gap : top)
+            if (top < limitT && root.clampReachable("top", limitT))
+                top = limitT
+            top = Math.min(top, fixedBottom - root.minSize)
             var y = Math.round(top)
             var th = Math.max(root.minSize, Math.round(fixedBottom - top))
             root.applyRect(s.x, y, s.w, th)

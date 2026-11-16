@@ -445,10 +445,16 @@ mod qobject {
         #[qinvokable]
         fn neighbor_rects(&self) -> QStringList;
 
-        /// 把窗口矩形收进主屏可用区，返回 [x, y, w, h]（字符串数字）。
-        /// 双屏场景瓦片只允许在主屏；拖动/缩放路径每帧调用，纯内存计算。
+        /// 把窗口矩形收进屏幕集合，返回 [x, y, w, h]（字符串数字）。
+        /// 瓦片允许停在任意一块屏上，但不许悬在屏幕外；拖动/缩放路径
+        /// 每帧调用，纯内存计算（屏幕列表有缓存）。
         #[qinvokable]
         fn clamp_rect(&self, x: i32, y: i32, w: i32, h: i32) -> QStringList;
+
+        /// 全部屏幕可用区，扁平数组 [x, y, w, h, ...]（字符串数字）。
+        /// 磁吸的屏幕边候选与钳制线从这里取，多屏各自生效。
+        #[qinvokable]
+        fn screen_rects(&self) -> QStringList;
 
         /// 时光瓦片当前应显示的背景（`file://` URL），关闭时为空串。
         #[qinvokable]
@@ -1041,7 +1047,8 @@ impl qobject::AppState {
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| paths::default_folder().to_string_lossy().to_string());
-        // 双屏场景：所有瓦片只在主屏显示，读档时也把旧位置收回来。
+        // 多屏布局合法：读档时只做宽松钳制（瓦片完整落在某块屏内则不动，
+        // 悬在屏外才收回最近的屏）。
         let rect = layout_store::clamp_rect(widget.rect);
         self.as_mut().set_window_x(rect.x);
         self.as_mut().set_window_y(rect.y);
@@ -1117,9 +1124,10 @@ impl qobject::AppState {
             return false;
         }
         let before = layout_store::find(&widget_id).map(|w| w.rect);
-        // 瓦片只允许在主屏：刷新主屏可用区、收回副屏/越界瓦片、拆开重叠。
-        // 不再调用多屏 reconcile_monitors，否则它会把瓦片重新归属到副屏。
-        layout_store::enforce_primary_screen();
+        // 每 5 秒的拓扑轮询：按主屏分辨率匹配布局。同一分辨率 → 什么都不
+        // 做；换分辨率/换屏 → 恢复该分辨率的归档或按新屏重排。不碰摆设
+        // 合法的瓦片，也不把跨屏布局拽回主屏。
+        layout_store::reconcile_resolution();
         let after = layout_store::find(&widget_id).map(|w| w.rect);
         let Some(after) = after else {
             return false;
@@ -1250,6 +1258,17 @@ impl qobject::AppState {
         out.append(QString::from(rect.y.to_string()));
         out.append(QString::from(rect.width.to_string()));
         out.append(QString::from(rect.height.to_string()));
+        out
+    }
+
+    fn screen_rects(&self) -> QStringList {
+        let mut out = QStringList::default();
+        for area in layout_store::screen_areas() {
+            out.append(QString::from(area.x.to_string()));
+            out.append(QString::from(area.y.to_string()));
+            out.append(QString::from(area.width.to_string()));
+            out.append(QString::from(area.height.to_string()));
+        }
         out
     }
 
@@ -2723,6 +2742,17 @@ pub extern "C" fn dm_apply_tile_window_type(window_id: u64) {
     let _ = dm_platform::x11::apply_tile_window_type(window_id as u32);
 }
 
+/// C++ 胶水回调：给普通工具窗口（设置/搜索/引导）补 SKIP_TASKBAR。
+///
+/// DeskMason 常驻入口是托盘，工具窗不该在任务栏占条块。
+///
+/// # Safety
+/// 由 window_glue.cpp 调用，`window_id` 必须是有效的 X11 窗口 id。
+#[no_mangle]
+pub extern "C" fn dm_skip_taskbar(window_id: u64) -> bool {
+    dm_platform::x11::skip_taskbar(window_id as u32).is_ok()
+}
+
 /// C++ 胶水回调：把 X 输入焦点设给指定瓦片窗口。
 ///
 /// # Safety
@@ -2853,11 +2883,12 @@ pub fn spawn_all_tiles() -> usize {
     if !removed.is_empty() {
         eprintln!("已合并重复的功能瓦片: {}", removed.join(", "));
     }
-    // 只允许主屏：先把副屏/越界瓦片收回主屏并拆开重叠，再建窗口。
-    // 不走多屏 reconcile_monitors，否则会把瓦片重新归属到副屏。
-    let moved = layout_store::enforce_primary_screen();
+    // 布局恢复按主屏分辨率匹配：同一分辨率 → 原样生效；换分辨率/换屏
+    // → 恢复该分辨率的归档（没有归档才重排）。启动不做任何"收回主屏"
+    // 的强制整理——多屏摆位是合法布局，强制整理会把用户摆好的布局打散。
+    let moved = layout_store::reconcile_resolution();
     if !moved.is_empty() {
-        eprintln!("已把瓦片收回主屏: {}", moved.join(", "));
+        eprintln!("分辨率变化，按新屏重排的瓦片: {}", moved.join(", "));
     }
     let mut widgets = layout_store::widgets();
     if widgets.is_empty() {

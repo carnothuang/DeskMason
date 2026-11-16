@@ -38,6 +38,7 @@ extern "C" bool dm_apply_window_blur(uint64_t window_id);
 extern "C" void dm_keep_window_below_x11(uint64_t window_id);
 extern "C" void dm_focus_window_x11(uint64_t window_id);
 extern "C" void dm_apply_tile_window_type(uint64_t window_id);
+extern "C" bool dm_skip_taskbar(uint64_t window_id);
 
 // 所有瓦片在**映射前**统一 WindowDoesNotAcceptFocus，这是 6 块瓦片透明/圆角
 // 外观一致的前提：Qt 据此写出 _KDE_NET_WM_WINDOW_TYPE_OVERRIDE + NORMAL，
@@ -144,12 +145,13 @@ extern "C" uint64_t dm_spawn_tile(void *engine_ptr, const char *widget_id,
         dm_install_tile_focus_filter(window);
     }
 
-    // 双屏场景：瓦片只允许在主屏。X11 上位置本来就是全局坐标，
-    // 但显式绑定 screen 会让 Qt 的 DPI / 弹出层定位也落在主屏。
-    // setScreen 可能改写未映射窗口的几何，所以之后恢复 QML 设好的位置。
-    if (QScreen *primary = QGuiApplication::primaryScreen()) {
+    // 多屏布局合法：按窗口中心所在的屏绑定 screen，Qt 的 DPI / 弹出层
+    // 定位跟随瓦片实际所在的屏。setScreen 可能改写未映射窗口的几何，
+    // 所以之后恢复 QML 设好的位置。
+    if (QScreen *home = QGuiApplication::screenAt(
+            QRect(window->x(), window->y(), window->width(), window->height()).center())) {
         const QRect before = window->geometry();
-        window->setScreen(primary);
+        window->setScreen(home);
         if (before.isValid()) {
             window->setGeometry(before);
         }
@@ -425,6 +427,8 @@ extern "C" uint64_t dm_spawn_settings_window(void *engine_ptr) {
 
     // 亚克力 / 云母：映射前挂 KWin 模糊 atom。
     dm_apply_window_blur(static_cast<uint64_t>(window->winId()));
+    // 常驻入口是托盘：设置窗不进任务栏。
+    dm_skip_taskbar(static_cast<uint64_t>(window->winId()));
 
     g_settingsWindow = window;
     window->setVisible(true);
@@ -470,6 +474,8 @@ extern "C" uint64_t dm_spawn_search_window(void *engine_ptr) {
 
     // 亚克力 / 云母：映射前挂 KWin 模糊 atom。
     dm_apply_window_blur(static_cast<uint64_t>(window->winId()));
+    // 常驻入口是托盘：搜索窗不进任务栏。
+    dm_skip_taskbar(static_cast<uint64_t>(window->winId()));
 
     g_searchWindow = window;
     window->setVisible(true);
@@ -546,6 +552,8 @@ extern "C" uint64_t dm_spawn_onboarding_window(void *engine_ptr) {
     }
 
     g_onboardingWindow = window;
+    // 常驻入口是托盘：引导窗不进任务栏。
+    dm_skip_taskbar(static_cast<uint64_t>(window->winId()));
     window->setVisible(true);
     return static_cast<uint64_t>(window->winId());
 }

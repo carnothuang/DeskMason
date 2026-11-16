@@ -625,6 +625,31 @@ pub fn apply_tile_window_type(window_id: u32) -> PlatformResult<()> {
     Ok(())
 }
 
+/// 给普通应用窗口（设置/搜索/引导）补 SKIP_TASKBAR / SKIP_PAGER。
+///
+/// DeskMason 的常驻入口是托盘（SNI），不该像普通应用一样在任务栏
+/// 占一个条块。瓦片窗口在 apply_desktop_layer 里已带上这些状态；
+/// 这三个工具窗走普通 Window 路径创建，需要单独补。
+/// 映射前调用才可靠（KWin 在 MapRequest 时读取任务栏策略）。
+pub fn skip_taskbar(window_id: u32) -> PlatformResult<()> {
+    if std::env::var_os("DISPLAY").is_none() {
+        return Err(PlatformError::NoX11Display);
+    }
+    let (conn, _screen_num) = x11rb::connect(None)?;
+    let state = intern(&conn, "_NET_WM_STATE")?;
+    let skip_taskbar = intern(&conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
+    let skip_pager = intern(&conn, "_NET_WM_STATE_SKIP_PAGER")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window_id,
+        state,
+        AtomEnum::ATOM,
+        &[skip_taskbar, skip_pager],
+    )?;
+    conn.flush()?;
+    Ok(())
+}
+
 /// 把 X 输入焦点交给指定的桌面层窗口。
 ///
 /// 瓦片窗口设了 `Qt::WindowDoesNotAcceptFocus`（避免 fcitx5 在点击瓦片时

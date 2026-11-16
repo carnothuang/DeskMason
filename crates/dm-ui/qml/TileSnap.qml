@@ -27,6 +27,10 @@ QtObject {
 
     // 邻瓦几何快照：[{x, y, w, h}, ...]
     property var neighbors: []
+    // 屏幕归属探测坐标：h 轴吸附用 vProbe（瓦片纵向中心），v 轴吸附用
+    // hProbe（瓦片横向中心）。由调用方在按下时更新（beginDrag 的入参）。
+    property real hProbe: 0
+    property real vProbe: 0
     // 吸附基准值（全局坐标）；-1 表示该轴该边未吸附。
     // 拖动时窗口四条边都可能吸附，四条边各持一个迟滞状态才不会串台。
     property real snapLeft: -1
@@ -53,8 +57,35 @@ QtObject {
     // 未吸附时找最近候选边；吸附中由 applySnap 处理迟滞。
     // axis: "h"（左右边，吸附值是 x）| "v"（上下边，吸附值是 y）。
     // side: 拖动的边。"right" 的候选是邻居左边与右边；其余类推。
-    // screen 是主屏可用区 {x, y, w, h}；值为 null 时不算屏幕边。
-    function findSnap(raw, axis, side, screen, snapDist) {
+    // screens 是全部屏幕可用区 [{x, y, w, h}, ...]；空数组时不算屏幕边。
+    // 屏幕边候选按"矩形中心所在的屏"取——瓦片停在哪块屏，就吸哪块屏
+    // 的边（多屏布局合法，不允许把拖到副屏的瓦片往主屏拽）。
+    function screenForCenter(screens, cx, cy) {
+        if (!screens || screens.length === 0)
+            return null
+        // 先找包含中心的屏。
+        for (var i = 0; i < screens.length; ++i) {
+            var s = screens[i]
+            if (cx >= s.x && cx < s.x + s.w && cy >= s.y && cy < s.y + s.h)
+                return s
+        }
+        // 都不包含时取中心最近的一块。
+        var best = null
+        var bestDist = Infinity
+        for (var j = 0; j < screens.length; ++j) {
+            var sc = screens[j]
+            var dx = sc.x + sc.w / 2 - cx
+            var dy = sc.y + sc.h / 2 - cy
+            var d = dx * dx + dy * dy
+            if (d < bestDist) {
+                bestDist = d
+                best = sc
+            }
+        }
+        return best
+    }
+
+    function findSnap(raw, axis, side, screens, snapDist) {
         var best = -1
         var bestDist = snapDist
         for (var i = 0; i < root.neighbors.length; ++i) {
@@ -77,25 +108,35 @@ QtObject {
                 }
             }
         }
-        // 主屏四边：每条边只吸自己方向的那一侧（与松手结算落位一致，
+        // 所属屏幕四边：每条边只吸自己方向的那一侧（与松手结算落位一致，
         // 结算把贴边瓦片退到屏边内侧 gap 处）。这里吸的是"边位置"：
         // 左边吸到 left + gap，右边吸到 right - gap，上下同理。
-        if (screen) {
-            var screenCands
+        if (screens && screens.length > 0) {
+            var screen = null
             if (axis === "h") {
-                screenCands = (side === "right")
-                        ? [screen.x + screen.w - root.gap]
-                        : [screen.x + root.gap]
+                // 左右边：瓦片纵向中心在哪块屏，就吸那块屏。
+                screen = screenForCenter(screens, raw, root.vProbe)
             } else {
-                screenCands = (side === "bottom")
-                        ? [screen.y + screen.h - root.gap]
-                        : [screen.y + root.gap]
+                // 上下边：瓦片横向中心在哪块屏，就吸那块屏。
+                screen = screenForCenter(screens, root.hProbe, raw)
             }
-            for (var k = 0; k < screenCands.length; ++k) {
-                var ds = Math.abs(raw - screenCands[k])
-                if (ds <= bestDist) {
-                    bestDist = ds
-                    best = screenCands[k]
+            if (screen) {
+                var screenCands
+                if (axis === "h") {
+                    screenCands = (side === "right")
+                            ? [screen.x + screen.w - root.gap]
+                            : [screen.x + root.gap]
+                } else {
+                    screenCands = (side === "bottom")
+                            ? [screen.y + screen.h - root.gap]
+                            : [screen.y + root.gap]
+                }
+                for (var k = 0; k < screenCands.length; ++k) {
+                    var ds = Math.abs(raw - screenCands[k])
+                    if (ds <= bestDist) {
+                        bestDist = ds
+                        best = screenCands[k]
+                    }
                 }
             }
         }
@@ -139,8 +180,12 @@ QtObject {
         return raw
     }
 
-    function beginDrag() {
+    function beginDrag(centerX, centerY) {
         root.refreshNeighbors()
+        if (!isNaN(centerX))
+            root.hProbe = centerX
+        if (!isNaN(centerY))
+            root.vProbe = centerY
         root.snapLeft = -1
         root.snapRight = -1
         root.snapTop = -1

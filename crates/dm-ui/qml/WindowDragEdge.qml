@@ -11,7 +11,7 @@ import QtQuick
 // 撞上 clamp 后误差被整段甩出，瓦片会被钉到屏幕角落。
 // 磁吸规则统一来自 TileSnap：
 // - 窗口任意一条边靠近邻瓦同轴边界（snapDist px 内）→ 吸附：
-//   相对边留 gap 缝，同侧边精确对齐，屏幕四边吸到屏边内侧 gap 处；
+//   相对边留 gap 缝，同侧边精确对齐，所在屏四边吸到屏边内侧 gap 处；
 // - 吸附中继续拉动超过迟滞带才解除（阻尼感 + 防抖动）。
 // 松手立即 save_geometry：Rust 侧 settle_rect 再做一次全局留缝结算
 // （与磁吸落位一致，正常情况不会改动），geometryTimer 兜底防抖落盘。
@@ -40,7 +40,8 @@ MouseArea {
         appState: root.appState
     }
 
-    // 主屏可用区快照：按下时取一次 {x, y, w, h}；取不到则不算屏幕边。
+    // 全部屏幕可用区快照：按下时取一次 [{x, y, w, h}, ...]；取不到则不算
+    // 屏幕边。多屏布局合法：瓦片停在哪块屏，就吸/钳哪块屏的边。
     property var screenArea: null
 
     // 按下时刻的全局指针坐标与窗口位置（参考系原点，此后只算增量）。
@@ -50,16 +51,18 @@ MouseArea {
     property real winY: 0
 
     function refreshScreen() {
-        if (appState && appState.clamp_rect) {
-            // 用一个超大矩形问主屏可用区：clamp_rect 会把它收进区内，
-            // 返回的 x/y/w/h 就是可用区本身。
-            var probe = appState.clamp_rect(0, 0, 100000, 100000)
-            root.screenArea = {
-                x: Number(probe[0]),
-                y: Number(probe[1]),
-                w: Number(probe[2]),
-                h: Number(probe[3])
+        if (appState && appState.screen_rects) {
+            var raw = appState.screen_rects()
+            var list = []
+            for (var i = 0; i + 3 < raw.length; i += 4) {
+                list.push({
+                    x: Number(raw[i]),
+                    y: Number(raw[i + 1]),
+                    w: Number(raw[i + 2]),
+                    h: Number(raw[i + 3])
+                })
             }
+            root.screenArea = list
         } else {
             root.screenArea = null
         }
@@ -107,7 +110,8 @@ MouseArea {
 
     function dragBegin() {
         dragging = true
-        snap.beginDrag()
+        snap.beginDrag(targetWindow.x + targetWindow.width / 2,
+                       targetWindow.y + targetWindow.height / 2)
         root.refreshScreen()
         var cur = root.globalCursor(null)
         pressX = cur.x

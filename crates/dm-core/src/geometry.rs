@@ -74,6 +74,14 @@ impl Rect {
         w * h
     }
 
+    /// 几何中心（向下取整）。用于"矩形完全在屏幕外时挑最近的一块屏"。
+    pub fn center(&self) -> (i32, i32) {
+        (
+            self.x + (self.width as i32) / 2,
+            self.y + (self.height as i32) / 2,
+        )
+    }
+
     /// 把矩形完整收进容器；放不下时按容器尺寸截断。
     pub fn clamp_into(&self, container: &Rect) -> Rect {
         let width = self.width.min(container.width);

@@ -121,7 +121,8 @@ ApplicationWindow {
             // 瓦片始终保持在桌面之上、普通窗口之下，绝不压住别的窗口。
             // 统一按固定顺序固定回 below 层，避免各窗口互抢层级闪烁。
             app.keep_below()
-            // 双屏场景：每轮把窗口收回主屏（原生拖动可能把窗口带到副屏）。
+            // 屏幕边界：每轮把窗口收回屏幕集合内（原生拖动可能把窗口
+            // 带到屏幕外）。多屏布局合法，任何一块屏内都算合规。
             var fixed = app.clamp_rect(window.x, window.y, window.width, window.height)
             window.x = Number(fixed[0])
             window.y = Number(fixed[1])

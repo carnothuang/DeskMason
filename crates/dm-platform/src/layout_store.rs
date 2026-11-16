@@ -222,7 +222,8 @@ pub fn apply_topology(document: &mut LayoutDocument, key: &str) -> bool {
     true
 }
 
-/// 保存一次窗口几何：同时写当前瓦片和当前显示器组合的摆放档。
+/// 保存一次窗口几何：同时写当前瓦片、当前显示器组合的摆放档与
+/// 当前主屏分辨率的布局归档。
 pub fn save_placement(widget_id: &str, rect: Rect) {
     let mut document = load();
     // 瓦片已被移除（设置页关闭功能瓦片）时，窗口关闭信号仍会带着旧几何
@@ -250,10 +251,33 @@ pub fn save_placement(widget_id: &str, rect: Rect) {
             changed = true;
         }
     }
+    // 分辨率归档：摆设一旦与归档不一致就刷新。旧格式文件（无分辨率
+    // 标记）在这里被就地收养——补上标记与首个归档。
+    if document.layout_resolution.is_empty() {
+        let key = current_resolution_key();
+        if !key.is_empty() {
+            let topology = document.active_topology.clone();
+            document.archive_to_resolution(&key, &topology);
+            changed = true;
+        }
+    } else {
+        let key = document.layout_resolution.clone();
+        if !document.matches_resolution_archive(&key) {
+            let topology = document.active_topology.clone();
+            document.archive_to_resolution(&key, &topology);
+            changed = true;
+        }
+    }
     if changed {
         document.bump();
         let _ = save(&document);
     }
+}
+
+/// 当前主屏分辨率键（"宽x高"）。X11 不可用时返回空串。
+fn current_resolution_key() -> String {
+    let area = refresh_primary_area();
+    format!("{}x{}", area.width, area.height)
 }
 
 /// 纯逻辑部分：给定拓扑修正布局，返回是否发生修改。单独抽出来是为了能用
@@ -493,14 +517,14 @@ fn new_file_widget(folder: &Path, rect: Rect, id: &str) -> WidgetConfig {
     widget
 }
 
-// ---------------------------------------------------------------- 主屏约束
+// ---------------------------------------------------------------- 屏幕约束
 
 /// 新建瓦片 / 边界磁吸 / 重叠重排的目标间隔：原吸附间隔 8px 的 5 倍。
 pub const MIN_TILE_GAP: i32 = 40;
 
 /// 全局「松手留缝」距离。
 ///
-/// 瓦片边缘贴到相邻瓦片边缘或主屏四边时，松手后统一退开 10px，
+/// 瓦片边缘贴到相邻瓦片边缘或所在屏幕四边时，松手后统一退开 10px，
 /// 否则两条边完全重合，下次再也抓不住拖动/缩放边条。这是运行时允许的
 /// 最小可操作间隔；40px 只是默认摆位与磁吸的目标，不用来覆盖用户
 /// 主动贴住后留下的 10px 缝。
@@ -512,8 +536,7 @@ fn primary_work_cache() -> &'static Mutex<Option<Rect>> {
     PRIMARY_WORK.get_or_init(|| Mutex::new(None))
 }
 
-/// 主屏可用区。拖动路径每帧都会问一次，结果缓存；显示器变化由
-/// [`refresh_primary_area`] 刷新，避免每帧连一次 X server。
+/// 主屏可用区。仅用于新建瓦片的默认摆位（新瓦片落在主屏网格上）。
 pub fn primary_work_area() -> Rect {
     if let Ok(guard) = primary_work_cache().lock() {
         if let Some(rect) = *guard {
@@ -550,6 +573,112 @@ fn detect_primary_work_area() -> Rect {
     Rect::new(0, 0, 1920, 1080)
 }
 
+static SCREEN_AREAS: OnceLock<Mutex<Option<Vec<Rect>>>> = OnceLock::new();
+
+fn screen_areas_cache() -> &'static Mutex<Option<Vec<Rect>>> {
+    SCREEN_AREAS.get_or_init(|| Mutex::new(None))
+}
+
+/// 所有显示器的可用区。拖动路径每帧都会问一次，结果缓存；显示器变化由
+/// [`refresh_screen_areas`] 刷新，避免每帧连一次 X server。
+/// 多屏布局是合法摆位：瓦片允许停在任何一块屏上。
+pub fn screen_areas() -> Vec<Rect> {
+    if let Ok(guard) = screen_areas_cache().lock() {
+        if let Some(areas) = guard.as_ref() {
+            return areas.clone();
+        }
+    }
+    refresh_screen_areas()
+}
+
+pub fn refresh_screen_areas() -> Vec<Rect> {
+    let areas = detect_screen_areas();
+    if let Ok(mut guard) = screen_areas_cache().lock() {
+        *guard = Some(areas.clone());
+    }
+    areas
+}
+
+fn detect_screen_areas() -> Vec<Rect> {
+    if let Ok(monitors) = display::list_monitors() {
+        let mut areas: Vec<Rect> = monitors
+            .iter()
+            .map(|m| {
+                let work = m.work();
+                if work.width >= 320 && work.height >= 240 {
+                    work
+                } else {
+                    m.bounds
+                }
+            })
+            .filter(|r| r.width >= 320 && r.height >= 240)
+            .collect();
+        // 克隆/镜像模式会给出完全相同的矩形，去重避免候选重复。
+        areas.dedup();
+        if !areas.is_empty() {
+            return areas;
+        }
+    }
+    vec![Rect::new(0, 0, 1920, 1080)]
+}
+
+/// 矩形归属的屏幕下标：与该屏交集最大者；与任何屏都无交集时取
+/// 中心最近的一块。`areas` 为空返回 None。
+fn max_intersection_owner(rect: Rect, areas: &[Rect]) -> Option<usize> {
+    if areas.is_empty() {
+        return None;
+    }
+    let mut best: Option<usize> = None;
+    let mut best_area = 0u64;
+    for (i, area) in areas.iter().enumerate() {
+        let inter = rect.intersection_area(area);
+        if inter > best_area {
+            best_area = inter;
+            best = Some(i);
+        }
+    }
+    if best.is_some() {
+        return best;
+    }
+    let center = rect.center();
+    let mut nearest: Option<usize> = None;
+    let mut best_dist = i64::MAX;
+    for (i, area) in areas.iter().enumerate() {
+        let c = area.center();
+        let dx = (c.0 - center.0) as i64;
+        let dy = (c.1 - center.1) as i64;
+        let dist = dx * dx + dy * dy;
+        if dist < best_dist {
+            best_dist = dist;
+            nearest = Some(i);
+        }
+    }
+    nearest
+}
+
+/// 把矩形收进屏幕集合：
+/// - 已完整落在某块屏内 → 不动（用户摆好的位置）；
+/// - 与某块屏有交集 → 收进交集最大的那块（归属屏）；
+/// - 完全在所有屏之外 → 收进中心最近的一块。
+pub fn clamp_rect_into_screens(rect: Rect, areas: &[Rect]) -> Rect {
+    if areas.is_empty() {
+        return rect;
+    }
+    for area in areas {
+        let inside = rect.x >= area.x
+            && rect.y >= area.y
+            && rect.right() <= area.right()
+            && rect.bottom() <= area.bottom();
+        if inside {
+            return rect;
+        }
+    }
+    match max_intersection_owner(rect, areas) {
+        Some(i) => clamp_rect_to(rect, areas[i]),
+        None => rect,
+    }
+}
+
 /// 把矩形收进指定可用区（同时限制最大尺寸）。
 fn clamp_rect_to(rect: Rect, area: Rect) -> Rect {
     let w = (rect.width as i32).clamp(160, area.width as i32);
@@ -564,8 +693,10 @@ fn clamp_rect_to(rect: Rect, area: Rect) -> Rect {
     )
 }
 
+/// 拖动/缩放/落盘路径的边界钳制：收进"所有屏幕"的合法范围。
+/// 瓦片停在哪块屏都行，但不许悬在屏幕外。
 pub fn clamp_rect(rect: Rect) -> Rect {
-    clamp_rect_to(rect, primary_work_area())
+    clamp_rect_into_screens(rect, &screen_areas())
 }
 
 /// 两条边缘是否算「贴死」：完全接触、几乎接触或轻微侵入。
@@ -573,7 +704,7 @@ fn edges_touching(gap: i32) -> bool {
     (-RELEASE_GAP..RELEASE_GAP).contains(&gap)
 }
 
-/// 全局「松手留缝」结算（纯逻辑，便于合成主屏做测试）。
+/// 全局「松手留缝」结算（纯逻辑，便于合成屏幕集合做测试）。
 ///
 /// 系统拖动（`startSystemMove`）由 KWin 直接移动窗口，QML 的磁吸与
 /// `minGap` 约束都拦不住瓦片贴死；因此所有瓦片统一在几何落盘时走这一条
@@ -581,12 +712,18 @@ fn edges_touching(gap: i32) -> bool {
 /// - 我的顶边贴住上方瓦片底边 → 下移 [`RELEASE_GAP`]；
 /// - 我的底边贴住下方瓦片顶边 → 上移；
 /// - 我的左/右边贴住左/右邻瓦 → 右移 / 左移；
-/// - 贴住主屏上/下/左/右边缘 → 向屏幕内侧退同样的距离。
+/// - 贴住**所属屏幕**四边 → 向屏幕内侧退同样的距离。
 ///
 /// 已经拉开距离（含用户上一轮要的 40px 对齐间隔）的位置完全不动。
-pub fn settle_rect_in(widget_id: &str, rect: Rect, widgets: &[WidgetConfig], area: Rect) -> Rect {
-    let mut out = clamp_rect_to(rect, area);
-    // 两轮足够让「同时贴住邻居 + 屏幕边」的情况收敛；之后仍以主屏为准。
+/// 多屏布局是合法摆位：结算只在瓦片归属屏的四边退缝，不把瓦片拽回主屏。
+pub fn settle_rect_in(
+    widget_id: &str,
+    rect: Rect,
+    widgets: &[WidgetConfig],
+    areas: &[Rect],
+) -> Rect {
+    let mut out = clamp_rect_into_screens(rect, areas);
+    // 两轮足够让「同时贴住邻居 + 屏幕边」的情况收敛。
     for _ in 0..2 {
         let mut moved = false;
         for other in widgets {
@@ -634,29 +771,36 @@ pub fn settle_rect_in(widget_id: &str, rect: Rect, widgets: &[WidgetConfig], are
             }
         }
 
-        // 主屏四条边：贴住就往屏幕内侧退 10px。
-        let top_gap = out.y - area.y;
-        let bottom_gap = area.bottom() - out.bottom();
-        let left_gap = out.x - area.x;
-        let right_gap = area.right() - out.right();
-        if (0..RELEASE_GAP).contains(&top_gap) {
-            out.y = area.y + RELEASE_GAP;
-            moved = true;
-        }
-        if (0..RELEASE_GAP).contains(&bottom_gap) {
-            out.y = area.bottom() - RELEASE_GAP - out.height as i32;
-            moved = true;
-        }
-        if (0..RELEASE_GAP).contains(&left_gap) {
-            out.x = area.x + RELEASE_GAP;
-            moved = true;
-        }
-        if (0..RELEASE_GAP).contains(&right_gap) {
-            out.x = area.right() - RELEASE_GAP - out.width as i32;
-            moved = true;
+        // 所属屏幕四条边：贴住就往屏幕内侧退 10px。归属按当前矩形
+        // 重新判断——邻瓦推挤可能把它挪到另一块屏附近。
+        if let Some(area) = max_intersection_owner(out, areas).and_then(|i| areas.get(i)) {
+            let top_gap = out.y - area.y;
+            let bottom_gap = area.bottom() - out.bottom();
+            let left_gap = out.x - area.x;
+            let right_gap = area.right() - out.right();
+            if (0..RELEASE_GAP).contains(&top_gap) {
+                out.y = area.y + RELEASE_GAP;
+                moved = true;
+            }
+            if (0..RELEASE_GAP).contains(&bottom_gap) {
+                out.y = area.bottom() - RELEASE_GAP - out.height as i32;
+                moved = true;
+            }
+            if (0..RELEASE_GAP).contains(&left_gap) {
+                out.x = area.x + RELEASE_GAP;
+                moved = true;
+            }
+            if (0..RELEASE_GAP).contains(&right_gap) {
+                out.x = area.right() - RELEASE_GAP - out.width as i32;
+                moved = true;
+            }
         }
 
-        out = clamp_rect_to(out, area);
+        let clamped = clamp_rect_into_screens(out, areas);
+        if clamped != out {
+            out = clamped;
+            moved = true;
+        }
         if !moved {
             break;
         }
@@ -664,10 +808,10 @@ pub fn settle_rect_in(widget_id: &str, rect: Rect, widgets: &[WidgetConfig], are
     out
 }
 
-/// 松手结算入口：读进程内布局缓存（不碰磁盘）与主屏可用区。
+/// 松手结算入口：读进程内布局缓存（不碰磁盘）与全部屏幕可用区。
 pub fn settle_rect(widget_id: &str, rect: Rect) -> Rect {
     let document = load();
-    settle_rect_in(widget_id, rect, &document.widgets, primary_work_area())
+    settle_rect_in(widget_id, rect, &document.widgets, &screen_areas())
 }
 
 fn default_tile_rect_in(index: i32, area: Rect) -> Rect {
@@ -696,145 +840,79 @@ pub fn default_tile_rect(index: i32) -> Rect {
     default_tile_rect_in(index, primary_work_area())
 }
 
-fn overlaps(a: Rect, b: Rect) -> bool {
-    a.x < b.right() && b.x < a.right() && a.y < b.bottom() && b.y < a.bottom()
-}
-
-fn has_overlap(widgets: &[WidgetConfig]) -> bool {
-    for i in 0..widgets.len() {
-        for j in (i + 1)..widgets.len() {
-            if overlaps(widgets[i].rect, widgets[j].rect) {
-                return true;
-            }
-        }
-    }
-    false
-}
-
-/// 有瓦片叠在一起时按 3 列网格重排，行列之间都留 [`MIN_TILE_GAP`]。
-/// 只在检测到重叠时调用，不干预用户自己摆好的合法位置。
-fn separate_overlapping(widgets: &mut [WidgetConfig], area: Rect) {
-    const COLUMNS: usize = 3;
-    let mut row_start = 0usize;
-    let mut top = area.y + MIN_TILE_GAP / 2;
-    while row_start < widgets.len() {
-        let row_end = (row_start + COLUMNS).min(widgets.len());
-        let mut left = area.x + MIN_TILE_GAP / 2;
-        let mut row_height = 0i32;
-        for widget in widgets.iter_mut().take(row_end).skip(row_start) {
-            let size = widget.rect;
-            widget.rect = clamp_rect_to(Rect::new(left, top, size.width, size.height), area);
-            let placed = widget.rect;
-            left = placed.right() + MIN_TILE_GAP;
-            row_height = row_height.max(placed.height as i32);
-        }
-        top += row_height + MIN_TILE_GAP;
-        row_start = row_end;
-    }
-}
-
-/// 把贴死（间距小于 [`RELEASE_GAP`]）的瓦片推开到全局留缝。
+/// 启动/拓扑变化时的分辨率匹配（纯逻辑，不碰磁盘）。
 ///
-/// 这里不再强制扩到 [`MIN_TILE_GAP`]（40px）：40px 是新建摆位、边界磁吸
-/// 和重叠重排的目标间隔，而用户主动贴住后由松手结算留下的 10px 缝是合法
-/// 位置，启动整理不能把它抹掉。只推"下/右"那一块，结果仍收在主屏内；
-/// 最多 3 轮收敛，避免屏幕放不下时来回抖动。
-fn enforce_release_gaps(widgets: &mut [WidgetConfig], area: Rect) -> Vec<String> {
-    let mut changed: Vec<String> = Vec::new();
-    for _ in 0..3 {
-        let mut moved = false;
-        for i in 0..widgets.len() {
-            for j in (i + 1)..widgets.len() {
-                let a = widgets[i].rect;
-                let b = widgets[j].rect;
+/// 规则（`key` 是当前主屏分辨率 "宽x高"）：
+/// 1. 文档已记录同一分辨率 → 什么都不做，用户摆好的布局原样生效；
+/// 2. 文档没有分辨率标记（v2 旧文件 / 首次运行）→ **就地收养**：
+///    瓦片位置不动，只补上归档与标记；
+/// 3. 文档记录的是另一分辨率 → 先把旧布局按旧分辨率归档保存，
+///    再查新分辨率有没有归档：
+///    - 有 → 原样恢复（瓦片回到该分辨率下上次的位置）；
+///    - 没有 → 瓦片按新屏网格重排（默认初始化），归档为该分辨率的首个布局。
+///
+/// 返回 (被调整的瓦片 id, 是否需要落盘)。
+pub fn reconcile_resolution_in(
+    document: &mut LayoutDocument,
+    key: &str,
+    topology: &str,
+) -> (Vec<String>, bool) {
+    if key.is_empty() {
+        return (Vec::new(), false);
+    }
+    // 规则 1：同一分辨率，当前摆设即归档（不一致时补写归档，位置不动）。
+    if document.layout_resolution == key {
+        if document.matches_resolution_archive(key) {
+            return (Vec::new(), false);
+        }
+        document.archive_to_resolution(key, topology);
+        return (Vec::new(), true);
+    }
 
-                // 水平投影有交集 → 上下两块至少留一条可操作缝。
-                if a.x < b.right() && b.x < a.right() {
-                    let (upper, lower, lower_idx) = if a.y <= b.y { (a, b, j) } else { (b, a, i) };
-                    let gap = lower.y - upper.bottom();
-                    if (0..RELEASE_GAP).contains(&gap) {
-                        let next = clamp_rect_to(
-                            Rect::new(
-                                lower.x,
-                                lower.y + RELEASE_GAP - gap,
-                                lower.width,
-                                lower.height,
-                            ),
-                            area,
-                        );
-                        if next.y > lower.y {
-                            widgets[lower_idx].rect = next;
-                            let id = widgets[lower_idx].id.clone();
-                            if !changed.contains(&id) {
-                                changed.push(id);
-                            }
-                            moved = true;
-                        }
-                    }
-                }
+    let previous_resolution = document.layout_resolution.clone();
+    let has_marker = !previous_resolution.is_empty();
 
-                // 垂直投影有交集 → 左右两块同理（重读可能被上一步改过）。
-                let a = widgets[i].rect;
-                let b = widgets[j].rect;
-                if a.y < b.bottom() && b.y < a.bottom() {
-                    let (left, right, right_idx) = if a.x <= b.x { (a, b, j) } else { (b, a, i) };
-                    let gap = right.x - left.right();
-                    if (0..RELEASE_GAP).contains(&gap) {
-                        let next = clamp_rect_to(
-                            Rect::new(
-                                right.x + RELEASE_GAP - gap,
-                                right.y,
-                                right.width,
-                                right.height,
-                            ),
-                            area,
-                        );
-                        if next.x > right.x {
-                            widgets[right_idx].rect = next;
-                            let id = widgets[right_idx].id.clone();
-                            if !changed.contains(&id) {
-                                changed.push(id);
-                            }
-                            moved = true;
-                        }
-                    }
-                }
+    // 规则 3 前置：有旧分辨率标记时，先把当前摆设归档到旧分辨率名下。
+    if has_marker && !document.matches_resolution_archive(&previous_resolution) {
+        document.archive_to_resolution(&previous_resolution, topology);
+    }
+
+    if !has_marker {
+        // 规则 2：旧格式文件就地收养——位置不动，只补标记与归档。
+        document.archive_to_resolution(key, topology);
+        return (Vec::new(), true);
+    }
+
+    if document.restore_from_resolution(key) {
+        // 规则 3a：新分辨率有归档，原样恢复。
+        (Vec::new(), true)
+    } else {
+        // 规则 3b：新分辨率没有归档 → 按新屏重排（默认初始化网格）。
+        let area = primary_work_area();
+        let mut changed = Vec::new();
+        for (index, widget) in document.widgets.iter_mut().enumerate() {
+            let next = default_tile_rect_in(index as i32, area);
+            if widget.rect != next {
+                widget.rect = next;
+                changed.push(widget.id.clone());
             }
         }
-        if !moved {
-            break;
-        }
+        document.archive_to_resolution(key, topology);
+        (changed, true)
     }
-    changed
 }
 
-/// 启动时把落在副屏/越界的瓦片收回主屏，拆开重叠，并保证贴死的瓦片
-/// 之间仍有 [`RELEASE_GAP`] 的可操作缝。返回被调整的瓦片 id，供日志排查。
-pub fn enforce_primary_screen() -> Vec<String> {
+/// 分辨率匹配入口：读当前主屏分辨率，跑纯逻辑并按需落盘。
+/// 返回被调整的瓦片 id（供日志排查）。
+pub fn reconcile_resolution() -> Vec<String> {
     let area = refresh_primary_area();
+    let key = format!("{}x{}", area.width, area.height);
+    let topology = display::list_monitors()
+        .map(|monitors| topology_key(&monitors))
+        .unwrap_or_default();
     let mut document = load();
-    let mut changed = Vec::new();
-    for widget in document.widgets.iter_mut() {
-        let rect = widget.rect;
-        let inside = rect.x >= area.x
-            && rect.y >= area.y
-            && rect.right() <= area.right()
-            && rect.bottom() <= area.bottom();
-        if !inside {
-            widget.rect = clamp_rect_to(rect, area);
-            changed.push(widget.id.clone());
-        }
-    }
-    if has_overlap(&document.widgets) {
-        separate_overlapping(&mut document.widgets, area);
-        changed.extend(document.widgets.iter().map(|w| w.id.clone()));
-    }
-    for id in enforce_release_gaps(&mut document.widgets, area) {
-        if !changed.contains(&id) {
-            changed.push(id);
-        }
-    }
-    if !changed.is_empty() {
+    let (changed, dirty) = reconcile_resolution_in(&mut document, &key, &topology);
+    if dirty {
         document.bump();
         let _ = save(&document);
     }
@@ -1022,7 +1100,6 @@ mod tests {
 
     #[test]
     fn clamp_keeps_rect_inside_primary_area() {
-        // 主屏在 y=1440..3040；副屏上的瓦片必须被收回来。
         let area = Rect::new(55, 1440, 2560, 1563);
         let clamped = clamp_rect_to(Rect::new(272, 100, 420, 520), area);
         assert!(clamped.x >= area.x && clamped.y >= area.y);
@@ -1030,6 +1107,34 @@ mod tests {
         assert!(clamped.bottom() <= area.bottom());
         assert_eq!(clamped.width, 420);
         assert_eq!(clamped.height, 520);
+    }
+
+    #[test]
+    fn clamp_into_screens_keeps_tile_on_secondary_screen() {
+        // 顶屏 0..1080、主屏 0+1080..2680 的双屏布局（实际机器的拓扑）。
+        // 副屏上的瓦片是合法摆位，不得被拽回主屏。
+        let areas = vec![Rect::new(0, 0, 1920, 1080), Rect::new(0, 1080, 2560, 1600)];
+        let on_top = Rect::new(335, 500, 420, 520);
+        assert_eq!(clamp_rect_into_screens(on_top, &areas), on_top);
+        let on_bottom = Rect::new(1600, 2000, 420, 520);
+        assert_eq!(clamp_rect_into_screens(on_bottom, &areas), on_bottom);
+        // 越界矩形收进交集最大的那块屏。
+        let straddling = Rect::new(1800, 900, 400, 300);
+        let clamped = clamp_rect_into_screens(straddling, &areas);
+        let owner = max_intersection_owner(clamped, &areas).unwrap();
+        let area = areas[owner];
+        assert!(clamped.right() <= area.right() && clamped.bottom() <= area.bottom());
+    }
+
+    #[test]
+    fn clamp_into_screens_rescues_rect_outside_all_screens() {
+        let areas = vec![Rect::new(0, 0, 1920, 1080), Rect::new(0, 1080, 2560, 1600)];
+        // 完全在所有屏之外的矩形：收进中心最近的一块。
+        let lost = Rect::new(3000, 2000, 420, 520);
+        let rescued = clamp_rect_into_screens(lost, &areas);
+        assert_ne!(rescued, lost);
+        let owner = max_intersection_owner(rescued, &areas);
+        assert!(owner.is_some());
     }
 
     #[test]
@@ -1053,103 +1158,164 @@ mod tests {
     }
 
     #[test]
-    fn overlapping_tiles_are_separated() {
-        let folder = std::env::temp_dir();
-        let area = Rect::new(0, 0, 1600, 1200);
-        let mut widgets = vec![
-            new_file_widget(&folder, Rect::new(100, 100, 300, 300), "a"),
-            new_file_widget(&folder, Rect::new(120, 120, 300, 300), "b"),
-            new_file_widget(&folder, Rect::new(140, 140, 300, 300), "c"),
-        ];
-        assert!(has_overlap(&widgets));
-        separate_overlapping(&mut widgets, area);
-        assert!(!has_overlap(&widgets));
-        assert_eq!(widgets[1].rect.x - widgets[0].rect.right(), MIN_TILE_GAP);
-    }
-
-    #[test]
-    fn tight_gaps_are_pushed_to_release_gap() {
-        let folder = std::env::temp_dir();
-        let area = Rect::new(0, 0, 1600, 1200);
-        let mut widgets = vec![
-            new_file_widget(&folder, Rect::new(100, 100, 300, 300), "top"),
-            new_file_widget(&folder, Rect::new(100, 402, 300, 300), "bottom"),
-            new_file_widget(&folder, Rect::new(405, 100, 300, 300), "right"),
-        ];
-        // 贴得只剩 2px / 5px，统一推到全局 10px 留缝。
-        assert_eq!(widgets[1].rect.y - widgets[0].rect.bottom(), 2);
-        let changed = enforce_release_gaps(&mut widgets, area);
-        assert!(changed.contains(&"bottom".to_string()));
-        assert_eq!(widgets[1].rect.y - widgets[0].rect.bottom(), RELEASE_GAP);
-        assert_eq!(widgets[2].rect.x - widgets[0].rect.right(), RELEASE_GAP);
-        // 已经合规的位置不会被二次推动（含上一轮要求的 40px 对齐间隔）。
-        assert_eq!(
-            enforce_release_gaps(&mut widgets, area),
-            Vec::<String>::new()
-        );
-        widgets[1].rect.y = widgets[0].rect.bottom() + MIN_TILE_GAP;
-        assert_eq!(
-            enforce_release_gaps(&mut widgets, area),
-            Vec::<String>::new()
-        );
-        assert_eq!(widgets[1].rect.y - widgets[0].rect.bottom(), MIN_TILE_GAP);
-    }
-
-    #[test]
     fn settle_pushes_lower_and_right_tiles_away() {
         let folder = std::env::temp_dir();
-        let area = Rect::new(0, 0, 1600, 1200);
+        let areas = vec![Rect::new(0, 0, 1600, 1200)];
         let widgets = vec![
             new_file_widget(&folder, Rect::new(100, 100, 300, 300), "top"),
             new_file_widget(&folder, Rect::new(100, 400, 300, 300), "bottom"),
             new_file_widget(&folder, Rect::new(400, 100, 300, 300), "right"),
         ];
         // 下方瓦片顶边贴住上方瓦片底边 → 下移 10px。
-        let lower = settle_rect_in("bottom", widgets[1].rect, &widgets, area);
+        let lower = settle_rect_in("bottom", widgets[1].rect, &widgets, &areas);
         assert_eq!(lower.y - widgets[0].rect.bottom(), RELEASE_GAP);
         // 右侧瓦片左边贴住左侧瓦片右边 → 右移 10px。
-        let right = settle_rect_in("right", widgets[2].rect, &widgets, area);
+        let right = settle_rect_in("right", widgets[2].rect, &widgets, &areas);
         assert_eq!(right.x - widgets[0].rect.right(), RELEASE_GAP);
     }
 
     #[test]
     fn settle_pushes_upper_and_left_tiles_back() {
         let folder = std::env::temp_dir();
-        let area = Rect::new(0, 0, 1600, 1200);
+        let areas = vec![Rect::new(0, 0, 1600, 1200)];
         let widgets = vec![
             new_file_widget(&folder, Rect::new(500, 500, 300, 300), "anchor"),
             new_file_widget(&folder, Rect::new(500, 200, 300, 300), "upper"),
             new_file_widget(&folder, Rect::new(200, 500, 300, 300), "left"),
         ];
         // 我在上方：底边贴住对方顶边 → 上移 10px。
-        let upper = settle_rect_in("upper", widgets[1].rect, &widgets, area);
+        let upper = settle_rect_in("upper", widgets[1].rect, &widgets, &areas);
         assert_eq!(widgets[0].rect.y - upper.bottom(), RELEASE_GAP);
         // 我在左侧：右边贴住对方左边 → 左移 10px。
-        let left = settle_rect_in("left", widgets[2].rect, &widgets, area);
+        let left = settle_rect_in("left", widgets[2].rect, &widgets, &areas);
         assert_eq!(widgets[0].rect.x - left.right(), RELEASE_GAP);
     }
 
     #[test]
     fn settle_pushes_off_all_four_screen_edges() {
-        let area = Rect::new(0, 0, 1000, 800);
-        let top_left = settle_rect_in("tl", Rect::new(0, 0, 300, 300), &[], area);
+        let areas = vec![Rect::new(0, 0, 1000, 800)];
+        let top_left = settle_rect_in("tl", Rect::new(0, 0, 300, 300), &[], &areas);
         assert_eq!(top_left.x, RELEASE_GAP);
         assert_eq!(top_left.y, RELEASE_GAP);
-        let bottom_right = settle_rect_in("br", Rect::new(700, 500, 300, 300), &[], area);
-        assert_eq!(area.right() - bottom_right.right(), RELEASE_GAP);
-        assert_eq!(area.bottom() - bottom_right.bottom(), RELEASE_GAP);
+        let bottom_right = settle_rect_in("br", Rect::new(700, 500, 300, 300), &[], &areas);
+        assert_eq!(areas[0].right() - bottom_right.right(), RELEASE_GAP);
+        assert_eq!(areas[0].bottom() - bottom_right.bottom(), RELEASE_GAP);
+    }
+
+    #[test]
+    fn settle_on_secondary_screen_pushes_off_its_edges() {
+        // 双屏：瓦片贴住**副屏**底边（1080+1600=2680）时，退缝针对副屏
+        // 而不是主屏。
+        let areas = vec![Rect::new(0, 0, 1920, 1080), Rect::new(0, 1080, 2560, 1600)];
+        let tile = Rect::new(100, 2580, 300, 100); // 底边恰好在 2680。
+        let out = settle_rect_in("t", tile, &[], &areas);
+        assert_eq!(areas[1].bottom() - out.bottom(), RELEASE_GAP);
+        assert_eq!(out.y, 2580 - RELEASE_GAP);
     }
 
     #[test]
     fn settle_keeps_already_separated_tiles() {
         let folder = std::env::temp_dir();
-        let area = Rect::new(0, 0, 1600, 1200);
+        let areas = vec![Rect::new(0, 0, 1600, 1200)];
         let widgets = vec![
             new_file_widget(&folder, Rect::new(100, 100, 300, 300), "top"),
             new_file_widget(&folder, Rect::new(100, 440, 300, 300), "bottom"),
         ];
-        let out = settle_rect_in("bottom", widgets[1].rect, &widgets, area);
+        let out = settle_rect_in("bottom", widgets[1].rect, &widgets, &areas);
         assert_eq!(out.y, 440);
         assert_eq!(out.y - widgets[0].rect.bottom(), MIN_TILE_GAP);
+    }
+
+    // ------------------------------------------------------------ 分辨率匹配
+
+    fn widget(id: &str, rect: Rect) -> WidgetConfig {
+        let folder = std::env::temp_dir();
+        let mut widget = new_file_widget(&folder, rect, id);
+        widget.title = id.to_string();
+        widget
+    }
+
+    #[test]
+    fn resolution_match_same_key_is_a_no_op() {
+        let mut doc = LayoutDocument::new();
+        doc.upsert_widget(widget("file-1", Rect::new(100, 200, 420, 520)));
+        doc.archive_to_resolution("2560x1600", "edid:a");
+        let before = doc.widgets[0].rect;
+        let (changed, dirty) = reconcile_resolution_in(&mut doc, "2560x1600", "edid:a");
+        assert!(changed.is_empty() && !dirty);
+        assert_eq!(doc.widgets[0].rect, before);
+    }
+
+    #[test]
+    fn resolution_match_adopts_legacy_file_without_marker() {
+        let mut doc = LayoutDocument::new();
+        doc.upsert_widget(widget("file-1", Rect::new(100, 200, 420, 520)));
+        let (changed, dirty) = reconcile_resolution_in(&mut doc, "2560x1600", "edid:a");
+        assert!(changed.is_empty() && dirty);
+        assert_eq!(doc.layout_resolution, "2560x1600");
+        assert!(doc.matches_resolution_archive("2560x1600"));
+        // 位置不动：旧文件的用户摆设原样生效。
+        assert_eq!(doc.widgets[0].rect, Rect::new(100, 200, 420, 520));
+    }
+
+    #[test]
+    fn resolution_switch_restores_archived_layout() {
+        let mut doc = LayoutDocument::new();
+        doc.upsert_widget(widget("file-1", Rect::new(100, 200, 420, 520)));
+        doc.archive_to_resolution("2560x1600", "edid:a");
+
+        // 分辨率换成 1920x1080：瓦片位置还没动（归档与摆设一致）。
+        let (changed, dirty) = reconcile_resolution_in(&mut doc, "1920x1080", "edid:a");
+        // 新分辨率没有归档 → 默认网格重排（id 出现在 changed 里）。
+        assert_eq!(changed, vec!["file-1".to_string()]);
+        assert!(dirty);
+        // 旧布局仍归档在 2560x1600 名下。
+        assert_eq!(doc.layout_resolution, "1920x1080");
+        assert_eq!(
+            doc.resolution_layouts["2560x1600"].widgets["file-1"].rect,
+            Rect::new(100, 200, 420, 520)
+        );
+
+        // 在 1920x1080 下摆好后归档（模拟 save_placement），切回 2560x1600
+        // → 原样恢复。
+        doc.archive_to_resolution("1920x1080", "edid:a");
+        let (changed, dirty) = reconcile_resolution_in(&mut doc, "2560x1600", "edid:a");
+        assert!(changed.is_empty() && dirty);
+        assert_eq!(doc.widgets[0].rect, Rect::new(100, 200, 420, 520));
+    }
+
+    #[test]
+    fn resolution_switch_saves_unarchived_move_first() {
+        let mut doc = LayoutDocument::new();
+        doc.upsert_widget(widget("file-1", Rect::new(100, 200, 420, 520)));
+        doc.archive_to_resolution("2560x1600", "edid:a");
+
+        // 用户在 2560x1600 下拖动了瓦片但归档还没跟上（异常退出场景）。
+        doc.widgets[0].rect = Rect::new(10, 10, 420, 520);
+        let (changed, dirty) = reconcile_resolution_in(&mut doc, "1920x1080", "edid:a");
+        assert_eq!(changed, vec!["file-1".to_string()]);
+        assert!(dirty);
+        // 切换前先把未归档的移动保存到旧分辨率名下，不丢用户摆设。
+        assert_eq!(
+            doc.resolution_layouts["2560x1600"].widgets["file-1"].rect,
+            Rect::new(10, 10, 420, 520)
+        );
+    }
+
+    #[test]
+    fn resolution_archive_tracks_moves() {
+        let mut doc = LayoutDocument::new();
+        doc.upsert_widget(widget("file-1", Rect::new(100, 200, 420, 520)));
+        doc.archive_to_resolution("2560x1600", "edid:a");
+
+        // 拖动后落盘（模拟 save_placement 的归档同步）。
+        doc.widgets[0].rect = Rect::new(300, 400, 420, 520);
+        doc.archive_to_resolution("2560x1600", "edid:a");
+        assert!(doc.matches_resolution_archive("2560x1600"));
+
+        // 再做一次匹配是幂等的。
+        let (changed, dirty) = reconcile_resolution_in(&mut doc, "2560x1600", "edid:a");
+        assert!(changed.is_empty() && !dirty);
+        assert_eq!(doc.widgets[0].rect, Rect::new(300, 400, 420, 520));
     }
 }

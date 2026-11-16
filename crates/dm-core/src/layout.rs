@@ -6,7 +6,14 @@ use std::collections::BTreeMap;
 /// 磁盘格式版本。任何破坏兼容的改动都必须 +1 并提供迁移。
 ///
 /// v1 → v2：新增 `active_topology` 与 `placements`，用于"按显示器组合记忆布局"。
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+/// v2 → v3：新增 `layout_resolution` 与 `resolution_layouts`，用于"按主屏
+///          分辨率记忆布局"——同一块屏换分辨率（或换屏）后恢复各自归档，
+///          分辨率没有归档时把旧布局按新屏重排，而不是把瓦片堆回原点。
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+
+/// 主屏分辨率键："宽x高"，如 "2560x1600"。只关心分辨率，不关心接口
+/// 名称（HDMI-1 / eDP-1 会随热插拔变化）与摆放（上下拼 / 左右拼）。
+pub type ResolutionKey = String;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MonitorLayout {
@@ -20,6 +27,16 @@ pub struct MonitorLayout {
 pub struct Placement {
     pub rect: Rect,
     pub monitor: MonitorId,
+}
+
+/// 一个分辨率下的整套布局归档。
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ResolutionLayout {
+    /// 归档时的瓦片摆设（id → 摆放）。
+    pub widgets: BTreeMap<String, Placement>,
+    /// 归档时的副屏拓扑键（原样记录，供诊断；不参与匹配）。
+    #[serde(default)]
+    pub topology: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -37,6 +54,13 @@ pub struct LayoutDocument {
     /// 组合键 → 瓦片 id → 摆放。换屏组合时整批保存/恢复。
     #[serde(default)]
     pub placements: BTreeMap<String, BTreeMap<String, Placement>>,
+    /// 当前布局对应的**主屏分辨率**（"宽x高"）。为空表示旧格式文件
+    /// 或尚未采集——启动/reconcile 时会按规则收养。
+    #[serde(default)]
+    pub layout_resolution: ResolutionKey,
+    /// 主屏分辨率 → 该分辨率下的整套布局归档。
+    #[serde(default)]
+    pub resolution_layouts: BTreeMap<ResolutionKey, ResolutionLayout>,
 }
 
 impl Default for LayoutDocument {
@@ -54,6 +78,8 @@ impl LayoutDocument {
             widgets: Vec::new(),
             active_topology: String::new(),
             placements: BTreeMap::new(),
+            layout_resolution: String::new(),
+            resolution_layouts: BTreeMap::new(),
         }
     }
 
@@ -101,6 +127,73 @@ impl LayoutDocument {
         before != self.widgets.len()
     }
 
+    // ------------------------------------------------------------ 分辨率归档
+
+    /// 把当前所有瓦片的摆设归档到指定主屏分辨率名下，并把它标为当前布局
+    /// 的分辨率。之后切换分辨率时可以从这份归档原样恢复。
+    pub fn archive_to_resolution(&mut self, key: &str, topology: &str) {
+        let mut widgets = BTreeMap::new();
+        for widget in &self.widgets {
+            widgets.insert(
+                widget.id.clone(),
+                Placement {
+                    rect: widget.rect,
+                    monitor: widget.monitor.clone(),
+                },
+            );
+        }
+        self.resolution_layouts.insert(
+            key.to_string(),
+            ResolutionLayout {
+                widgets,
+                topology: topology.to_string(),
+            },
+        );
+        self.layout_resolution = key.to_string();
+    }
+
+    /// 当前摆设是否与某分辨率的归档完全一致（一致就不必重复写盘）。
+    pub fn matches_resolution_archive(&self, key: &str) -> bool {
+        if self.layout_resolution != key {
+            return false;
+        }
+        match self.resolution_layouts.get(key) {
+            Some(archive) => {
+                archive.widgets.len() == self.widgets.len()
+                    && self.widgets.iter().all(|w| {
+                        archive
+                            .widgets
+                            .get(&w.id)
+                            .is_some_and(|p| p.rect == w.rect && p.monitor == w.monitor)
+                    })
+            }
+            // 没有归档条目：首次落盘时建立，视为不一致。
+            None => false,
+        }
+    }
+
+    /// 从某分辨率的归档恢复摆设。只恢复文档里现存瓦片；归档里多余的
+    /// 条目（瓦片已删除）跳过。返回是否改动过任何瓦片。
+    pub fn restore_from_resolution(&mut self, key: &str) -> bool {
+        let Some(archive) = self.resolution_layouts.get(key) else {
+            return false;
+        };
+        let mut changed = false;
+        for widget in self.widgets.iter_mut() {
+            if let Some(placement) = archive.widgets.get(&widget.id) {
+                if widget.rect != placement.rect || widget.monitor != placement.monitor {
+                    widget.rect = placement.rect;
+                    widget.monitor = placement.monitor.clone();
+                    changed = true;
+                }
+            }
+        }
+        if changed || self.layout_resolution != key {
+            self.layout_resolution = key.to_string();
+        }
+        changed
+    }
+
     /// 显示器消失后，把它名下的瓦片迁到 fallback，并按可用区域缩放位置。
     pub fn relocate_monitor(&mut self, from: &MonitorId, to: &MonitorId) -> usize {
         let target = self.monitors.get(to).map(|m| m.bounds);
@@ -139,6 +232,10 @@ struct RawDocument {
     active_topology: String,
     #[serde(default)]
     placements: BTreeMap<String, BTreeMap<String, Placement>>,
+    #[serde(default)]
+    layout_resolution: ResolutionKey,
+    #[serde(default)]
+    resolution_layouts: BTreeMap<ResolutionKey, ResolutionLayout>,
 }
 
 impl RawDocument {
@@ -149,7 +246,7 @@ impl RawDocument {
                 supported: CURRENT_SCHEMA_VERSION,
             });
         }
-        // v0/v1 -> v2：字段都有默认值，只需要补版本号。
+        // v0/v1/v2 -> v3：新增字段都有默认值，只需要补版本号。
         Ok(LayoutDocument {
             schema_version: CURRENT_SCHEMA_VERSION,
             revision: self.revision,
@@ -157,6 +254,8 @@ impl RawDocument {
             widgets: self.widgets,
             active_topology: self.active_topology,
             placements: self.placements,
+            layout_resolution: self.layout_resolution,
+            resolution_layouts: self.resolution_layouts,
         })
     }
 }
@@ -204,9 +303,12 @@ mod tests {
     fn migrates_v1_to_v2() {
         let text = r#"{"schema_version":1,"widgets":[],"monitors":{}}"#;
         let doc = LayoutDocument::from_json(text).unwrap();
-        assert_eq!(doc.schema_version, 2);
+        assert_eq!(doc.schema_version, CURRENT_SCHEMA_VERSION);
         assert!(doc.active_topology.is_empty());
         assert!(doc.placements.is_empty());
+        // v2 → v3 新增字段：旧文件读入后为空，等待启动收养。
+        assert!(doc.layout_resolution.is_empty());
+        assert!(doc.resolution_layouts.is_empty());
     }
 
     #[test]
