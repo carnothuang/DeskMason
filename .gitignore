@@ -5,3 +5,6 @@
 # 仅当前开发机使用的沙盒桥接配置（含本机绝对路径），不属于项目内容
 /.cargo/config.toml
 /dev-env.sh
+
+# WorkBuddy 本地工作区数据（工作日志/记忆），不属于项目内容
+/.workbuddy/
