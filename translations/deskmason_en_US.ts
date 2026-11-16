@@ -280,11 +280,11 @@ Your files stay where they are — nothing is moved or changed.</translation>
         <location filename="../crates/dm-ui/qml/onboarding.qml" line="77"/>
         <source>· 托盘图标可显示 / 隐藏全部瓦片
 · 默认快捷键 Ctrl+Alt+D，可在设置里修改
-· 新建瓦片、搜索、设置都在托盘菜单里
+· 新建瓦片、设置都在托盘菜单里
 · 设置里可以打开开机自启</source>
         <translation>· The tray icon shows / hides all tiles
 · Default hotkey is Ctrl+Alt+D, changeable in Settings
-· New tile, search and settings live in the tray menu
+· New tile and settings live in the tray menu
 · Start at login can be enabled in Settings</translation>
     </message>
     <message>
@@ -367,24 +367,6 @@ Your files stay where they are — nothing is moved or changed.</translation>
         <location filename="../crates/dm-ui/qml/quickcapture.qml" line="208"/>
         <source>还没有随记</source>
         <translation>No notes yet</translation>
-    </message>
-</context>
-<context>
-    <name>search</name>
-    <message>
-        <location filename="../crates/dm-ui/qml/search.qml" line="16"/>
-        <source>DeskMason 搜索</source>
-        <translation>DeskMason Search</translation>
-    </message>
-    <message>
-        <location filename="../crates/dm-ui/qml/search.qml" line="108"/>
-        <source>搜索文件，回车确认</source>
-        <translation>Search files, press Enter</translation>
-    </message>
-    <message>
-        <location filename="../crates/dm-ui/qml/search.qml" line="176"/>
-        <source>共 %1 项 · 双击打开</source>
-        <translation>%1 results · double-click to open</translation>
     </message>
 </context>
 <context>

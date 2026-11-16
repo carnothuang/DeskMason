@@ -74,7 +74,6 @@ pub fn start() -> (bool, bool) {
                 }
                 // 下面三个都直接排到 GUI 线程执行：走队列会被最先轮询到的
                 // 窗口取走，一旦该窗口没有对应分支，请求就丢了。
-                dm_platform::tray::TrayAction::Search => crate::request_search_window(),
                 dm_platform::tray::TrayAction::Settings => crate::request_settings_window(),
                 dm_platform::tray::TrayAction::Quit => crate::quit_app(),
             }

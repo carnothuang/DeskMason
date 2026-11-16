@@ -10,6 +10,9 @@ ApplicationWindow {
     height: 380
     visible: false
     title: qsTr("欢迎使用 DeskMason")
+    // 与设置/搜索窗同理：默认 Window 类型（NORMAL）不在 dde-dock 白名单，
+    // 会在任务栏占一条。Tool → UTILITY，自带 SKIP_TASKBAR。
+    flags: Qt.Tool | Qt.FramelessWindowHint
 
     palette.window: "#202022"
     palette.windowText: "#F2F2F2"
@@ -74,7 +77,7 @@ ApplicationWindow {
                 Label {
                     Layout.fillWidth: true
                     wrapMode: Text.Wrap
-                    text: qsTr("· 托盘图标可显示 / 隐藏全部瓦片\n· 默认快捷键 Ctrl+Alt+D，可在设置里修改\n· 新建瓦片、搜索、设置都在托盘菜单里\n· 设置里可以打开开机自启")
+                    text: qsTr("· 托盘图标可显示 / 隐藏全部瓦片\n· 默认快捷键 Ctrl+Alt+D，可在设置里修改\n· 新建瓦片、设置都在托盘菜单里\n· 设置里可以打开开机自启")
                     font.pixelSize: 13
                 }
                 Item { Layout.fillHeight: true }

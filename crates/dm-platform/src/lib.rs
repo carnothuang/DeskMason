@@ -18,7 +18,6 @@ pub mod layout_store;
 pub mod mpris;
 pub mod paths;
 pub mod prefs;
-pub mod search;
 pub mod settings_store;
 pub mod todo_store;
 pub mod trash;

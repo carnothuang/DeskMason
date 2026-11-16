@@ -45,10 +45,9 @@ extern "C" void dm_focus_window_x11(uint64_t window_id);
 extern "C" bool dm_skip_taskbar(uint64_t window_id);
 // 定义在文件后半部分；跨线程请求窗口时需要提前声明。
 extern "C" uint64_t dm_spawn_settings_window(void *engine_ptr);
-extern "C" uint64_t dm_spawn_search_window(void *engine_ptr);
 
 // QQmlApplicationEngine 指针：由第一次创建瓦片时记录，供托盘线程跨线程请求
-// 开设置 / 搜索窗口使用。
+// 开设置窗口使用。
 static void *g_engine = nullptr;
 
 // 瓦片窗口的标志必须在 winId()（原生窗口创建）**之前**定好，映射后绝不再
@@ -426,7 +425,7 @@ extern "C" void dm_app_quit() {
         Qt::QueuedConnection);
 }
 
-// 从任意线程请求打开设置 / 搜索窗口。
+// 从任意线程请求打开设置窗口。
 //
 // 和退出同一个道理：QQmlComponent 只能在 GUI 线程用，托盘线程直接建窗口会
 // 崩。这里统一排到主线程执行。engine 指针在创建瓦片时记录到 g_engine。
@@ -437,17 +436,6 @@ extern "C" void dm_request_settings_window() {
         [] {
             if (g_engine) {
                 dm_spawn_settings_window(g_engine);
-            }
-        },
-        Qt::QueuedConnection);
-}
-
-extern "C" void dm_request_search_window() {
-    QMetaObject::invokeMethod(
-        qApp,
-        [] {
-            if (g_engine) {
-                dm_spawn_search_window(g_engine);
             }
         },
         Qt::QueuedConnection);
@@ -563,53 +551,6 @@ extern "C" uint64_t dm_spawn_settings_window(void *engine_ptr) {
     dm_skip_taskbar(static_cast<uint64_t>(window->winId()));
 
     g_settingsWindow = window;
-    window->setVisible(true);
-    return static_cast<uint64_t>(window->winId());
-}
-
-// ---------------------------------------------------------------- 搜索窗口
-
-static QPointer<QWindow> g_searchWindow;
-
-extern "C" uint64_t dm_spawn_search_window(void *engine_ptr) {
-    auto *engine = static_cast<QQmlApplicationEngine *>(engine_ptr);
-    if (!engine) {
-        return 0;
-    }
-    if (g_searchWindow) {
-        g_searchWindow->raise();
-        g_searchWindow->requestActivate();
-        return static_cast<uint64_t>(g_searchWindow->winId());
-    }
-
-    QQmlComponent component(
-        engine, QUrl(QStringLiteral("qrc:/qt/qml/com/deskmason/probe/qml/search.qml")));
-    if (component.isError()) {
-        for (const auto &error : component.errors()) {
-            qWarning("DeskMason: 搜索窗口加载失败: %s", qPrintable(error.toString()));
-        }
-        return 0;
-    }
-
-    QObject *object = component.create();
-    auto *window = qobject_cast<QWindow *>(object);
-    if (!window) {
-        delete object;
-        return 0;
-    }
-
-    if (auto *screen = window->screen()) {
-        const QRect area = screen->availableGeometry();
-        window->setPosition(area.center().x() - window->width() / 2,
-                            area.center().y() - window->height() / 2);
-    }
-
-    // 亚克力 / 云母：映射前挂 KWin 模糊 atom。
-    dm_apply_window_blur(static_cast<uint64_t>(window->winId()));
-    // 常驻入口是托盘：搜索窗不进任务栏。
-    dm_skip_taskbar(static_cast<uint64_t>(window->winId()));
-
-    g_searchWindow = window;
     window->setVisible(true);
     return static_cast<uint64_t>(window->winId());
 }

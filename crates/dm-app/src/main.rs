@@ -28,11 +28,9 @@ fn main() {
     if dm_ui::should_show_onboarding() {
         dm_ui::spawn_onboarding();
     }
-    // 开发验证：DESKMASON_OPEN=settings|search 直接拉起对应窗口。
-    match std::env::var("DESKMASON_OPEN").as_deref() {
-        Ok("settings") => dm_ui::open_settings_dev(),
-        Ok("search") => dm_ui::open_search_dev(),
-        _ => {}
+    // 开发验证：DESKMASON_OPEN=settings 直接拉起设置窗口。
+    if std::env::var("DESKMASON_OPEN").as_deref() == Ok("settings") {
+        dm_ui::open_settings_dev();
     }
     if spawned == 0 {
         eprintln!("没有创建任何瓦片窗口；检查 X11 会话与 QML 资源");

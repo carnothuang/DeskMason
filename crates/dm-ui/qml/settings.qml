@@ -4,7 +4,7 @@ import QtQuick.Layouts
 import com.deskmason.probe
 
 // 设置窗口。
-// 左侧导航（常规/外观/胶囊模式/文件格子/功能格子/快捷与交互/诊断与维护/关于）
+// 左侧导航（常规/外观/文件格子/功能格子/快捷与交互/诊断与维护/关于）
 // + 顶部"搜索设置" + 右侧分组设置卡（图标 + 标题 + 描述 + 控件）。
 ApplicationWindow {
     id: window
@@ -13,7 +13,11 @@ ApplicationWindow {
     visible: false
     title: qsTr("DeskMason 设置")
     color: "transparent"
-    flags: Qt.Window | Qt.FramelessWindowHint
+    // 必须用 Tool：`Qt.Window` 会让 Qt 写出 _NET_WM_WINDOW_TYPE_NORMAL 并在
+    // show() 时重写 _NET_WM_STATE，抹掉映射前写入的 SKIP_TASKBAR——dde-dock
+    // 的 shouldSkip() 白名单里没有 NORMAL，设置窗就会在任务栏占一条。
+    // Tool 让 Qt 写 _NET_WM_WINDOW_TYPE_UTILITY（白名单类型）。
+    flags: Qt.Tool | Qt.FramelessWindowHint
 
     // ---------- 主题（暗紫黑底 + 紫色强调） ----------
     readonly property color cBase: "#1A1116"          // 窗口底
@@ -53,46 +57,29 @@ ApplicationWindow {
     // ---------- 搜索 ----------
     property string filterText: ""
     readonly property var searchIndex: [
-        { page: 0, title: qsTr("语言"), desc: qsTr("切换 DeskMason 的界面语言") },
         { page: 0, title: qsTr("开机自动启动"), desc: qsTr("登录后在后台启动 DeskMason") },
         { page: 0, title: qsTr("待办与随记附件"), desc: qsTr("关联保留原路径；复制会将文件保存到 DeskMason 数据目录") },
         { page: 0, title: qsTr("新手引导"), desc: qsTr("重新查看收纳、映射、文件安全和托盘操作说明") },
         { page: 1, title: qsTr("应用主题"), desc: qsTr("跟随系统，或固定浅色/深色") },
         { page: 1, title: qsTr("托盘图标"), desc: qsTr("选择托盘区域的图标样式") },
-        { page: 1, title: qsTr("使用系统强调色"), desc: qsTr("开启后使用系统当前强调色") },
-        { page: 1, title: qsTr("窗口材质与边框"), desc: qsTr("云母") },
-        { page: 1, title: qsTr("显示密度"), desc: qsTr("标准（推荐）") },
-        { page: 1, title: qsTr("格子窗口与标题栏"), desc: qsTr("悬浮") },
-        { page: 1, title: qsTr("显示与隐藏动画"), desc: qsTr("标准（推荐）") },
         { page: 1, title: qsTr("时光背景"), desc: qsTr("默认使用当前桌面壁纸，可关闭或自定义图片") },
-        { page: 2, title: qsTr("允许格子收起"), desc: qsTr("开启后格子可收起为紧凑状态；关闭时所有格子保持展开") },
-        { page: 2, title: qsTr("展开方式"), desc: qsTr("点击胶囊展开，或将鼠标停在标题区域自动展开") },
-        { page: 2, title: qsTr("宽度关系"), desc: qsTr("决定胶囊与展开后的格子是否使用相同宽度") },
-        { page: 2, title: qsTr("收起后显示"), desc: qsTr("选择显示关键信息、简要摘要，或仅保留图标和标题") },
-        { page: 2, title: qsTr("排列方式"), desc: qsTr("让每个胶囊独立摆放，或组合成一个可整体移动的栏") },
-        { page: 2, title: qsTr("隐藏具体内容"), desc: qsTr("隐藏文件名、待办与随记正文，以及音乐信息和封面；数量与状态仍可显示") },
-        { page: 2, title: qsTr("悬停响应"), desc: qsTr("控制鼠标停在标题区域多久后展开，以及移出后多久收起") },
-        { page: 3, title: qsTr("文件显示"), desc: qsTr("图片预览、快捷方式标记、列表信息和路径提示") },
-        { page: 3, title: qsTr("自动叠放"), desc: qsTr("把同类文件叠成一摞，点击展开") },
-        { page: 3, title: qsTr("收纳与路径"), desc: qsTr("备份与数据目录") },
-        { page: 3, title: qsTr("图标大小"), desc: qsTr("新建文件瓦片的默认外观") },
-        { page: 3, title: qsTr("文件名"), desc: qsTr("新建文件瓦片的默认外观") },
-        { page: 3, title: qsTr("密度"), desc: qsTr("新建文件瓦片的默认外观") },
-        { page: 3, title: qsTr("排序"), desc: qsTr("新建文件瓦片的默认外观") },
-        { page: 4, title: qsTr("随记"), desc: qsTr("记录剪贴板内容") },
-        { page: 4, title: qsTr("待办"), desc: qsTr("任务清单") },
-        { page: 4, title: qsTr("音乐"), desc: qsTr("系统媒体控制、进度和封面背景") },
-        { page: 4, title: qsTr("天气"), desc: qsTr("天气预报") },
-        { page: 4, title: qsTr("时光"), desc: qsTr("日历与时间信息") },
-        { page: 4, title: qsTr("搜索"), desc: qsTr("全盘搜索文件、待办和随记") },
-        { page: 5, title: qsTr("全局快捷键"), desc: settings.hotkey },
-        { page: 5, title: qsTr("悬浮操作"), desc: qsTr("控制鼠标移入格子时显示的快捷操作") },
-        { page: 5, title: qsTr("窗口与鼠标行为"), desc: qsTr("调整打开、缩放吸附和格子层级行为") },
-        { page: 6, title: qsTr("本地备份"), desc: qsTr("备份布局、设置与待办/随记数据库") },
-        { page: 6, title: qsTr("备份目录"), desc: qsTr("备份保存到 ~/.local/share/deskmason/backups") },
-        { page: 6, title: qsTr("应用版本"), desc: qsTr("版本 %1").arg(settings.version) },
-        { page: 7, title: qsTr("关于 DeskMason"), desc: qsTr("Deepin 桌面瓦片应用") },
-        { page: 7, title: qsTr("数据目录"), desc: qsTr("~/.config/deskmason 与 ~/.local/share/deskmason") }
+        { page: 2, title: qsTr("文件显示"), desc: qsTr("图片预览、快捷方式标记、列表信息和路径提示") },
+        { page: 2, title: qsTr("自动叠放"), desc: qsTr("把同类文件叠成一摞，点击展开") },
+        { page: 2, title: qsTr("收纳与路径"), desc: qsTr("备份与数据目录") },
+        { page: 2, title: qsTr("文件名"), desc: qsTr("新建文件瓦片的默认外观") },
+        { page: 2, title: qsTr("排序"), desc: qsTr("新建文件瓦片的默认外观") },
+        { page: 3, title: qsTr("随记"), desc: qsTr("记录剪贴板内容") },
+        { page: 3, title: qsTr("待办"), desc: qsTr("任务清单") },
+        { page: 3, title: qsTr("音乐"), desc: qsTr("系统媒体控制、进度和封面背景") },
+        { page: 3, title: qsTr("天气"), desc: qsTr("天气预报") },
+        { page: 3, title: qsTr("时光"), desc: qsTr("日历与时间信息") },
+        { page: 4, title: qsTr("全局快捷键"), desc: settings.hotkey },
+        { page: 4, title: qsTr("悬浮操作"), desc: qsTr("控制鼠标移入格子时显示的快捷操作") },
+        { page: 4, title: qsTr("窗口与鼠标行为"), desc: qsTr("调整打开、缩放吸附和格子层级行为") },
+        { page: 5, title: qsTr("本地备份"), desc: qsTr("备份布局、设置与待办/随记数据库") },
+        { page: 5, title: qsTr("备份目录"), desc: qsTr("备份保存到 ~/.local/share/deskmason/backups") },
+        { page: 6, title: qsTr("关于 DeskMason"), desc: qsTr("Deepin 桌面瓦片应用") },
+        { page: 6, title: qsTr("数据目录"), desc: qsTr("~/.config/deskmason 与 ~/.local/share/deskmason") }
     ]
     property var searchResults: []
     onFilterTextChanged: {
@@ -111,7 +98,6 @@ ApplicationWindow {
     readonly property var navItems: [
         { key: "general",  label: qsTr("常规"),        glyph: "⌂" },
         { key: "look",     label: qsTr("外观"),        glyph: "★" },
-        { key: "capsule",  label: qsTr("胶囊模式"),    glyph: "▣" },
         { key: "files",    label: qsTr("文件格子"),    glyph: "▤" },
         { key: "tools",    label: qsTr("功能格子"),    glyph: "◧" },
         { key: "interact", label: qsTr("快捷与交互"),  glyph: "➤" },
@@ -191,7 +177,7 @@ ApplicationWindow {
         }
     }
 
-    // 分组标题（胶囊模式页的"常用设置/详细设置"）。
+    // 分组标题。
     component GroupTitle: Label {
         property string titleText: ""
         text: titleText
@@ -497,23 +483,6 @@ ApplicationWindow {
                             Layout.fillWidth: true
 
                             CardRow {
-                                iconGlyph: "🌐"
-                                titleText: qsTr("语言")
-                                descText: qsTr("切换 DeskMason 的界面语言")
-                                PrefCombo {
-                                    property var keys: ["system", "zh-CN", "en-US"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("跟随系统"), qsTr("简体中文"), qsTr("English")]
-                                    currentIndex: keys.indexOf(settings.generalLanguage)
-                                    onActivated: {
-                                        settings.generalLanguage = keys[currentIndex]
-                                        settings.save_ui_state()
-                                        settings.statusText = qsTr("重启 DeskMason 后生效")
-                                    }
-                                }
-                            }
-
-                            CardRow {
                                 iconGlyph: "⚑"
                                 titleText: qsTr("开机自动启动")
                                 descText: qsTr("登录后在后台启动 DeskMason")
@@ -592,108 +561,6 @@ ApplicationWindow {
                             }
 
                             CardRow {
-                                iconGlyph: "◇"
-                                titleText: qsTr("使用系统强调色")
-                                descText: qsTr("开启后使用系统当前强调色")
-                                PrefSwitch {
-                                    checked: settings.useSystemAccent
-                                    onToggled: {
-                                        settings.useSystemAccent = checked
-                                        settings.save_ui_state()
-                                    }
-                                }
-                                Chevron {}
-                            }
-
-                            CardRow {
-                                iconGlyph: "🎨"
-                                titleText: qsTr("窗口材质与边框")
-                                descText: {
-                                    const keys = ["mica", "acrylic", "opaque"]
-                                    const labels = [qsTr("云母"), qsTr("亚克力"), qsTr("不透明")]
-                                    const index = keys.indexOf(settings.windowMaterial)
-                                    return index >= 0 ? labels[index] : ""
-                                }
-                                PrefCombo {
-                                    property var keys: ["mica", "acrylic", "opaque"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("云母"), qsTr("亚克力"), qsTr("不透明")]
-                                    currentIndex: keys.indexOf(settings.windowMaterial)
-                                    onActivated: {
-                                        settings.windowMaterial = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                                Chevron {}
-                            }
-
-                            CardRow {
-                                iconGlyph: "📄"
-                                titleText: qsTr("显示密度")
-                                descText: {
-                                    const keys = ["compact", "normal", "comfortable"]
-                                    const labels = [qsTr("紧凑"), qsTr("标准（推荐）"), qsTr("宽松")]
-                                    const index = keys.indexOf(settings.displayDensity)
-                                    return index >= 0 ? labels[index] : ""
-                                }
-                                PrefCombo {
-                                    property var keys: ["compact", "normal", "comfortable"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("紧凑"), qsTr("标准（推荐）"), qsTr("宽松")]
-                                    currentIndex: keys.indexOf(settings.displayDensity)
-                                    onActivated: {
-                                        settings.displayDensity = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                                Chevron {}
-                            }
-
-                            CardRow {
-                                iconGlyph: "🗂"
-                                titleText: qsTr("格子窗口与标题栏")
-                                descText: {
-                                    const keys = ["floating", "inline", "hidden"]
-                                    const labels = [qsTr("悬浮"), qsTr("内嵌"), qsTr("隐藏")]
-                                    const index = keys.indexOf(settings.titlebarStyle)
-                                    return index >= 0 ? labels[index] : ""
-                                }
-                                PrefCombo {
-                                    property var keys: ["floating", "inline", "hidden"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("悬浮"), qsTr("内嵌"), qsTr("隐藏")]
-                                    currentIndex: keys.indexOf(settings.titlebarStyle)
-                                    onActivated: {
-                                        settings.titlebarStyle = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                                Chevron {}
-                            }
-
-                            CardRow {
-                                iconGlyph: "◫"
-                                titleText: qsTr("显示与隐藏动画")
-                                descText: {
-                                    const keys = ["standard", "quick", "off"]
-                                    const labels = [qsTr("标准（推荐）"), qsTr("快速"), qsTr("关闭")]
-                                    const index = keys.indexOf(settings.showHideAnimation)
-                                    return index >= 0 ? labels[index] : ""
-                                }
-                                PrefCombo {
-                                    property var keys: ["standard", "quick", "off"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("标准（推荐）"), qsTr("快速"), qsTr("关闭")]
-                                    currentIndex: keys.indexOf(settings.showHideAnimation)
-                                    onActivated: {
-                                        settings.showHideAnimation = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                                Chevron {}
-                            }
-
-                            CardRow {
                                 iconGlyph: "◷"
                                 titleText: qsTr("时光背景")
                                 descText: qsTr("默认使用当前桌面壁纸；可关闭或指定一张本地图片")
@@ -746,126 +613,9 @@ ApplicationWindow {
                             }
                         }
 
-                        // ============ 胶囊模式 ============
-                        ColumnLayout {
-                            visible: settings.currentPage === 2
-                            spacing: 10
-                            Layout.fillWidth: true
-
-                            CardRow {
-                                iconGlyph: "⇲"
-                                titleText: qsTr("允许格子收起")
-                                descText: qsTr("开启后格子可收起为紧凑状态；关闭时所有格子保持展开")
-                                PrefSwitch {
-                                    checked: settings.capsuleEnabled
-                                    onToggled: {
-                                        settings.capsuleEnabled = checked
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            GroupTitle { titleText: qsTr("常用设置") }
-
-                            CardRow {
-                                iconGlyph: "⇲"
-                                titleText: qsTr("展开方式")
-                                descText: qsTr("点击胶囊展开，或将鼠标停在标题区域自动展开")
-                                PrefCombo {
-                                    property var keys: ["hover", "click"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("悬停自动展开"), qsTr("仅点击展开")]
-                                    currentIndex: keys.indexOf(settings.capsuleExpandMode)
-                                    onActivated: {
-                                        settings.capsuleExpandMode = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            CardRow {
-                                iconGlyph: "↗"
-                                titleText: qsTr("宽度关系")
-                                descText: qsTr("决定胶囊与展开后的格子是否使用相同宽度")
-                                PrefCombo {
-                                    property var keys: ["same", "independent"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("保持同宽（推荐）"), qsTr("各自独立")]
-                                    currentIndex: keys.indexOf(settings.capsuleWidthMode)
-                                    onActivated: {
-                                        settings.capsuleWidthMode = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            CardRow {
-                                iconGlyph: "📄"
-                                titleText: qsTr("收起后显示")
-                                descText: qsTr("选择显示关键信息、简要摘要，或仅保留图标和标题")
-                                PrefCombo {
-                                    property var keys: ["key", "summary", "minimal"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("关键信息（推荐）"), qsTr("简要摘要"), qsTr("仅图标和标题")]
-                                    currentIndex: keys.indexOf(settings.capsuleCollapsedContent)
-                                    onActivated: {
-                                        settings.capsuleCollapsedContent = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            CardRow {
-                                iconGlyph: "☰"
-                                titleText: qsTr("排列方式")
-                                descText: qsTr("让每个胶囊独立摆放，或组合成一个可整体移动的栏")
-                                PrefCombo {
-                                    property var keys: ["independent", "combined"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("独立摆放"), qsTr("组合成栏")]
-                                    currentIndex: keys.indexOf(settings.capsuleArrangement)
-                                    onActivated: {
-                                        settings.capsuleArrangement = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            CardRow {
-                                iconGlyph: "🔒"
-                                titleText: qsTr("隐藏具体内容")
-                                descText: qsTr("隐藏文件名、待办与随记正文，以及音乐信息和封面；数量与状态仍可显示")
-                                PrefSwitch {
-                                    checked: settings.capsuleHideContent
-                                    onToggled: {
-                                        settings.capsuleHideContent = checked
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            GroupTitle { titleText: qsTr("详细设置") }
-
-                            CardRow {
-                                iconGlyph: "🕘"
-                                titleText: qsTr("悬停响应")
-                                descText: qsTr("控制鼠标停在标题区域多久后展开，以及移出后多久收起")
-                                PrefCombo {
-                                    property var keys: ["fast", "medium", "slow"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("灵敏"), qsTr("适中"), qsTr("从容")]
-                                    currentIndex: keys.indexOf(settings.capsuleHoverResponse)
-                                    onActivated: {
-                                        settings.capsuleHoverResponse = keys[currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-                        }
-
                         // ============ 文件格子 ============
                         ColumnLayout {
-                            visible: settings.currentPage === 3
+                            visible: settings.currentPage === 2
                             spacing: 10
                             Layout.fillWidth: true
 
@@ -911,22 +661,6 @@ ApplicationWindow {
                             GroupTitle { titleText: qsTr("新建文件瓦片的默认外观") }
 
                             CardRow {
-                                iconGlyph: "◯"
-                                titleText: qsTr("图标大小")
-                                descText: qsTr("只影响之后新建的瓦片；已有瓦片在它自己的标题栏菜单里改")
-                                PrefCombo {
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("小"), qsTr("中"), qsTr("大")]
-                                    currentIndex: settings.defaultIconSize <= 32 ? 0
-                                                  : (settings.defaultIconSize <= 48 ? 1 : 2)
-                                    onActivated: {
-                                        settings.defaultIconSize = [32, 48, 64][currentIndex]
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            CardRow {
                                 iconGlyph: "☰"
                                 titleText: qsTr("文件名")
                                 descText: qsTr("新建文件瓦片的默认外观")
@@ -936,22 +670,6 @@ ApplicationWindow {
                                     currentIndex: settings.defaultNameLines
                                     onActivated: {
                                         settings.defaultNameLines = currentIndex
-                                        settings.save_ui_state()
-                                    }
-                                }
-                            }
-
-                            CardRow {
-                                iconGlyph: "▦"
-                                titleText: qsTr("密度")
-                                descText: qsTr("新建文件瓦片的默认外观")
-                                PrefCombo {
-                                    property var keys: ["compact", "normal", "comfortable"]
-                                    labelText: model[currentIndex]
-                                    model: [qsTr("紧凑"), qsTr("标准"), qsTr("宽松")]
-                                    currentIndex: keys.indexOf(settings.defaultDensity)
-                                    onActivated: {
-                                        settings.defaultDensity = keys[currentIndex]
                                         settings.save_ui_state()
                                     }
                                 }
@@ -976,7 +694,7 @@ ApplicationWindow {
 
                         // ============ 功能格子 ============
                         ColumnLayout {
-                            visible: settings.currentPage === 4
+                            visible: settings.currentPage === 3
                             spacing: 10
                             Layout.fillWidth: true
 
@@ -1034,25 +752,11 @@ ApplicationWindow {
                                 }
                                 Chevron {}
                             }
-
-                            CardRow {
-                                iconGlyph: "⌕"
-                                titleText: qsTr("搜索")
-                                descText: qsTr("全盘搜索文件、待办和随记")
-                                PrefSwitch {
-                                    checked: settings.toolSearch
-                                    onToggled: {
-                                        settings.toolSearch = checked
-                                        settings.save_ui_state()
-                                    }
-                                }
-                                Chevron {}
-                            }
                         }
 
                         // ============ 快捷与交互 ============
                         ColumnLayout {
-                            visible: settings.currentPage === 5
+                            visible: settings.currentPage === 4
                             spacing: 10
                             Layout.fillWidth: true
 
@@ -1125,7 +829,7 @@ ApplicationWindow {
 
                         // ============ 诊断与维护 ============
                         ColumnLayout {
-                            visible: settings.currentPage === 6
+                            visible: settings.currentPage === 5
                             spacing: 10
                             Layout.fillWidth: true
 
@@ -1157,17 +861,11 @@ ApplicationWindow {
                                     onClicked: settings.reveal_backup_dir()
                                 }
                             }
-
-                            CardRow {
-                                iconGlyph: "ⓘ"
-                                titleText: qsTr("应用版本")
-                                descText: qsTr("版本 %1").arg(settings.version)
-                            }
                         }
 
                         // ============ 关于 ============
                         ColumnLayout {
-                            visible: settings.currentPage === 7
+                            visible: settings.currentPage === 6
                             spacing: 10
                             Layout.fillWidth: true
 

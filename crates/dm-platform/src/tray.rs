@@ -13,7 +13,6 @@ pub enum TrayAction {
     NewTile,
     /// 按类型新建：storage_key（file/quickCapture/todo/weather/music/glance）。
     NewTileKind(&'static str),
-    Search,
     Settings,
     Quit,
 }
@@ -65,12 +64,6 @@ impl ksni::Tray for DeskMasonTray {
             StandardItem {
                 label: "新建文件格子…".to_string(),
                 activate: Box::new(|tray: &mut Self| tray.send(TrayAction::NewTileKind("file"))),
-                ..Default::default()
-            }
-            .into(),
-            StandardItem {
-                label: "搜索…".to_string(),
-                activate: Box::new(|tray: &mut Self| tray.send(TrayAction::Search)),
                 ..Default::default()
             }
             .into(),

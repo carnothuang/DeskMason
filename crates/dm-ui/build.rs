@@ -18,7 +18,6 @@ fn main() {
         QmlFile::from("qml/weather.qml"),
         QmlFile::from("qml/todo.qml"),
         QmlFile::from("qml/quickcapture.qml"),
-        QmlFile::from("qml/search.qml"),
         QmlFile::from("qml/music.qml"),
         QmlFile::from("qml/onboarding.qml"),
     ]))

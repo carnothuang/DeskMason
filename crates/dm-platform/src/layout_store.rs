@@ -389,7 +389,6 @@ fn kind_title(kind: WidgetKind) -> &'static str {
         WidgetKind::Weather => "天气",
         WidgetKind::Todo => "待办",
         WidgetKind::Music => "音乐",
-        WidgetKind::Search => "搜索",
         WidgetKind::Glance => "时光",
     }
 }
@@ -401,7 +400,6 @@ fn next_widget_id_for(document: &LayoutDocument, kind: WidgetKind) -> String {
         WidgetKind::Weather => "weather",
         WidgetKind::Todo => "todo",
         WidgetKind::Music => "music",
-        WidgetKind::Search => "search",
         WidgetKind::Glance => "glance",
     };
     let mut index = document.widgets.len() + 1;

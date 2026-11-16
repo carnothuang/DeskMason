@@ -141,27 +141,6 @@ mod qobject {
     extern "RustQt" {
         #[qobject]
         #[qml_element]
-        #[qproperty(QStringList, names)]
-        #[qproperty(QStringList, paths)]
-        #[qproperty(QStringList, kinds)]
-        #[qproperty(QStringList, icon_paths, cxx_name = "iconPaths")]
-        #[qproperty(QString, count_text, cxx_name = "countText")]
-        #[qproperty(QString, status_text, cxx_name = "statusText")]
-        type SearchContent = super::SearchContentRust;
-
-        #[qinvokable]
-        fn run(self: Pin<&mut SearchContent>, query: &QString);
-
-        #[qinvokable]
-        fn open_result(&self, index: i32);
-
-        #[qinvokable]
-        fn reveal_result(&self, index: i32);
-    }
-
-    extern "RustQt" {
-        #[qobject]
-        #[qml_element]
         #[qproperty(QStringList, ids)]
         #[qproperty(QStringList, previews)]
         /// 未截断的完整正文，供「查看单条全文」对话框使用。
@@ -293,27 +272,10 @@ mod qobject {
         #[qproperty(QString, version)]
         #[qproperty(i32, current_page, cxx_name = "currentPage")]
         #[qproperty(bool, menu_visible, cxx_name = "menuVisible")]
-        #[qproperty(bool, capsule_enabled, cxx_name = "capsuleEnabled")]
-        #[qproperty(QString, capsule_expand_mode, cxx_name = "capsuleExpandMode")]
-        #[qproperty(QString, capsule_width_mode, cxx_name = "capsuleWidthMode")]
-        #[qproperty(
-            QString,
-            capsule_collapsed_content,
-            cxx_name = "capsuleCollapsedContent"
-        )]
-        #[qproperty(QString, capsule_arrangement, cxx_name = "capsuleArrangement")]
-        #[qproperty(bool, capsule_hide_content, cxx_name = "capsuleHideContent")]
-        #[qproperty(QString, capsule_hover_response, cxx_name = "capsuleHoverResponse")]
         #[qproperty(QString, tray_icon_style, cxx_name = "trayIconStyle")]
-        #[qproperty(bool, use_system_accent, cxx_name = "useSystemAccent")]
-        #[qproperty(QString, window_material, cxx_name = "windowMaterial")]
-        #[qproperty(QString, display_density, cxx_name = "displayDensity")]
-        #[qproperty(QString, titlebar_style, cxx_name = "titlebarStyle")]
-        #[qproperty(QString, show_hide_animation, cxx_name = "showHideAnimation")]
         #[qproperty(bool, file_show_previews, cxx_name = "fileShowPreviews")]
         #[qproperty(bool, file_auto_stack, cxx_name = "fileAutoStack")]
         #[qproperty(bool, hover_actions_enabled, cxx_name = "hoverActionsEnabled")]
-        #[qproperty(QString, general_language, cxx_name = "generalLanguage")]
         #[qproperty(QString, attachment_mode, cxx_name = "attachmentMode")]
         #[qproperty(QString, app_theme, cxx_name = "appTheme")]
         #[qproperty(bool, tool_capture, cxx_name = "toolCapture")]
@@ -321,7 +283,6 @@ mod qobject {
         #[qproperty(bool, tool_music, cxx_name = "toolMusic")]
         #[qproperty(bool, tool_weather, cxx_name = "toolWeather")]
         #[qproperty(bool, tool_glance, cxx_name = "toolGlance")]
-        #[qproperty(bool, tool_search, cxx_name = "toolSearch")]
         /// 时光瓦片背景：空路径表示跟随当前桌面壁纸。
         #[qproperty(bool, glance_bg_enabled, cxx_name = "glanceBgEnabled")]
         #[qproperty(QString, glance_bg_path, cxx_name = "glanceBgPath")]
@@ -418,10 +379,6 @@ mod qobject {
         /// 打开（或前置）设置窗口。
         #[qinvokable]
         fn open_settings(&self);
-
-        /// 打开（或前置）搜索窗口。
-        #[qinvokable]
-        fn open_search(&self);
 
         /// 把本瓦片窗口放回 below 层（桌面之上、普通窗口之下）。
         #[qinvokable]
@@ -1172,12 +1129,6 @@ impl qobject::AppState {
         }
     }
 
-    fn open_search(&self) {
-        unsafe {
-            open_search_window();
-        }
-    }
-
     fn keep_self_below(&self) {
         // 宿主"隐藏全部"时不参与层级调整：隐藏态保持窗口不可见即可。
         if !host::is_visible() {
@@ -1464,99 +1415,6 @@ impl qobject::MusicContent {
             let _ = client.previous(&bus);
         }
         self.as_mut().refresh();
-    }
-}
-
-// ------------------------------------------------------------ 搜索
-
-pub struct SearchContentRust {
-    names: QStringList,
-    paths: QStringList,
-    kinds: QStringList,
-    icon_paths: QStringList,
-    count_text: QString,
-    status_text: QString,
-}
-
-impl Default for SearchContentRust {
-    fn default() -> Self {
-        Self {
-            names: QStringList::default(),
-            paths: QStringList::default(),
-            kinds: QStringList::default(),
-            icon_paths: QStringList::default(),
-            count_text: QString::from("0"),
-            status_text: QString::default(),
-        }
-    }
-}
-
-impl qobject::SearchContent {
-    fn run(mut self: std::pin::Pin<&mut Self>, query: &QString) {
-        let text = query.to_string();
-        if text.trim().is_empty() {
-            self.as_mut().set_names(QStringList::default());
-            self.as_mut().set_paths(QStringList::default());
-            self.as_mut().set_kinds(QStringList::default());
-            self.as_mut().set_icon_paths(QStringList::default());
-            self.as_mut().set_count_text(QString::from("0"));
-            self.as_mut().set_status_text(QString::default());
-            return;
-        }
-
-        let hits = dm_platform::search::search(&text, 120);
-        let count = hits.len();
-        self.as_mut().set_names(
-            hits.iter()
-                .map(|h| QString::from(&h.name))
-                .collect::<QStringList>(),
-        );
-        self.as_mut().set_paths(
-            hits.iter()
-                .map(|h| QString::from(&h.path.to_string_lossy().to_string()))
-                .collect::<QStringList>(),
-        );
-        self.as_mut().set_kinds(
-            hits.iter()
-                .map(|h| QString::from(if h.is_dir { "dir" } else { "file" }))
-                .collect::<QStringList>(),
-        );
-        // 与文件瓦片一致：走系统图标主题（bloom），避免 emoji 字体渲染问题。
-        self.as_mut().set_icon_paths(
-            hits.iter()
-                .map(|h| {
-                    let icon_name = if h.is_dir {
-                        "folder"
-                    } else {
-                        dm_core::file_tile::icon_name_for_file(&h.name)
-                    };
-                    QString::from(
-                        &dm_platform::icons::resolve_icon_with_fallback(icon_name)
-                            .map(|p| p.to_string_lossy().to_string())
-                            .unwrap_or_default(),
-                    )
-                })
-                .collect::<QStringList>(),
-        );
-        self.as_mut()
-            .set_count_text(QString::from(&count.to_string()));
-        self.as_mut().set_status_text(QString::from(if count == 0 {
-            "没有找到匹配项（当前为本地遍历后端）"
-        } else {
-            ""
-        }));
-    }
-
-    fn open_result(&self, index: i32) {
-        if let Some(path) = self.paths().iter().nth(index as usize) {
-            let _ = dm_platform::launch::open_path(std::path::Path::new(&path.to_string()));
-        }
-    }
-
-    fn reveal_result(&self, index: i32) {
-        if let Some(path) = self.paths().iter().nth(index as usize) {
-            let _ = dm_platform::launch::reveal_path(std::path::Path::new(&path.to_string()));
-        }
     }
 }
 
@@ -2206,11 +2064,6 @@ pub fn open_settings_dev() {
     unsafe { open_settings_window() };
 }
 
-/// 开发验证入口：启动时直接打开搜索窗口（DESKMASON_OPEN=search）。
-pub fn open_search_dev() {
-    unsafe { open_search_window() };
-}
-
 // ------------------------------------------------------------ 设置面板
 
 pub struct SettingsPanelRust {
@@ -2225,23 +2078,10 @@ pub struct SettingsPanelRust {
     version: QString,
     current_page: i32,
     menu_visible: bool,
-    capsule_enabled: bool,
-    capsule_expand_mode: QString,
-    capsule_width_mode: QString,
-    capsule_collapsed_content: QString,
-    capsule_arrangement: QString,
-    capsule_hide_content: bool,
-    capsule_hover_response: QString,
     tray_icon_style: QString,
-    use_system_accent: bool,
-    window_material: QString,
-    display_density: QString,
-    titlebar_style: QString,
-    show_hide_animation: QString,
     file_show_previews: bool,
     file_auto_stack: bool,
     hover_actions_enabled: bool,
-    general_language: QString,
     attachment_mode: QString,
     app_theme: QString,
     tool_capture: bool,
@@ -2249,7 +2089,6 @@ pub struct SettingsPanelRust {
     tool_music: bool,
     tool_weather: bool,
     tool_glance: bool,
-    tool_search: bool,
     glance_bg_enabled: bool,
     glance_bg_path: QString,
 }
@@ -2278,59 +2117,14 @@ impl SettingsPanelRust {
             version: QString::from(env!("CARGO_PKG_VERSION")),
             current_page: page.clamp(0, 7),
             menu_visible: dm_platform::prefs::get_bool("settings/menuOpen").unwrap_or(true),
-            capsule_enabled: dm_platform::prefs::get_bool("capsule/enabled").unwrap_or(true),
-            capsule_expand_mode: QString::from(
-                &dm_platform::prefs::get_string("capsule/expandMode")
-                    .unwrap_or_else(|| "hover".into()),
-            ),
-            capsule_width_mode: QString::from(
-                &dm_platform::prefs::get_string("capsule/widthMode")
-                    .unwrap_or_else(|| "same".into()),
-            ),
-            capsule_collapsed_content: QString::from(
-                &dm_platform::prefs::get_string("capsule/collapsedContent")
-                    .unwrap_or_else(|| "key".into()),
-            ),
-            capsule_arrangement: QString::from(
-                &dm_platform::prefs::get_string("capsule/arrangement")
-                    .unwrap_or_else(|| "independent".into()),
-            ),
-            capsule_hide_content: dm_platform::prefs::get_bool("capsule/hideContent")
-                .unwrap_or(false),
-            capsule_hover_response: QString::from(
-                &dm_platform::prefs::get_string("capsule/hoverResponse")
-                    .unwrap_or_else(|| "fast".into()),
-            ),
             tray_icon_style: QString::from(
                 &dm_platform::prefs::get_string("appearance/trayIconStyle")
                     .unwrap_or_else(|| "color".into()),
-            ),
-            use_system_accent: dm_platform::prefs::get_bool("appearance/systemAccent")
-                .unwrap_or(true),
-            window_material: QString::from(
-                &dm_platform::prefs::get_string("appearance/material")
-                    .unwrap_or_else(|| "mica".into()),
-            ),
-            display_density: QString::from(
-                &dm_platform::prefs::get_string("appearance/density")
-                    .unwrap_or_else(|| "normal".into()),
-            ),
-            titlebar_style: QString::from(
-                &dm_platform::prefs::get_string("appearance/titlebar")
-                    .unwrap_or_else(|| "floating".into()),
-            ),
-            show_hide_animation: QString::from(
-                &dm_platform::prefs::get_string("appearance/animation")
-                    .unwrap_or_else(|| "standard".into()),
             ),
             file_show_previews: dm_platform::prefs::get_bool("files/showPreviews").unwrap_or(true),
             file_auto_stack: dm_platform::prefs::get_bool("files/autoStack").unwrap_or(false),
             hover_actions_enabled: dm_platform::prefs::get_bool("interaction/hoverActions")
                 .unwrap_or(true),
-            general_language: QString::from(
-                &dm_platform::prefs::get_string("general/language")
-                    .unwrap_or_else(|| "system".into()),
-            ),
             attachment_mode: QString::from(
                 &dm_platform::prefs::get_string("general/attachmentMode")
                     .unwrap_or_else(|| "linked".into()),
@@ -2346,7 +2140,6 @@ impl SettingsPanelRust {
             tool_music: layout_store::has_kind(WidgetKind::Music),
             tool_weather: layout_store::has_kind(WidgetKind::Weather),
             tool_glance: layout_store::has_kind(WidgetKind::Glance),
-            tool_search: dm_platform::prefs::get_bool("tools/search").unwrap_or(true),
             glance_bg_enabled: dm_platform::prefs::get_bool("glance/bgEnabled").unwrap_or(true),
             glance_bg_path: QString::from(
                 &dm_platform::prefs::get_string("glance/background").unwrap_or_default(),
@@ -2436,48 +2229,19 @@ impl qobject::SettingsPanel {
     fn save_ui_state(self: std::pin::Pin<&mut Self>) {
         dm_platform::prefs::set_string("settings/page", &self.current_page().to_string());
         dm_platform::prefs::set_bool("settings/menuOpen", *self.menu_visible());
-        dm_platform::prefs::set_bool("capsule/enabled", *self.capsule_enabled());
-        dm_platform::prefs::set_string(
-            "capsule/expandMode",
-            &self.capsule_expand_mode().to_string(),
-        );
-        dm_platform::prefs::set_string("capsule/widthMode", &self.capsule_width_mode().to_string());
-        dm_platform::prefs::set_string(
-            "capsule/collapsedContent",
-            &self.capsule_collapsed_content().to_string(),
-        );
-        dm_platform::prefs::set_string(
-            "capsule/arrangement",
-            &self.capsule_arrangement().to_string(),
-        );
-        dm_platform::prefs::set_bool("capsule/hideContent", *self.capsule_hide_content());
-        dm_platform::prefs::set_string(
-            "capsule/hoverResponse",
-            &self.capsule_hover_response().to_string(),
-        );
         dm_platform::prefs::set_string(
             "appearance/trayIconStyle",
             &self.tray_icon_style().to_string(),
         );
-        dm_platform::prefs::set_bool("appearance/systemAccent", *self.use_system_accent());
-        dm_platform::prefs::set_string("appearance/material", &self.window_material().to_string());
-        dm_platform::prefs::set_string("appearance/density", &self.display_density().to_string());
-        dm_platform::prefs::set_string("appearance/titlebar", &self.titlebar_style().to_string());
-        dm_platform::prefs::set_string(
-            "appearance/animation",
-            &self.show_hide_animation().to_string(),
-        );
         dm_platform::prefs::set_bool("files/showPreviews", *self.file_show_previews());
         dm_platform::prefs::set_bool("files/autoStack", *self.file_auto_stack());
         dm_platform::prefs::set_bool("interaction/hoverActions", *self.hover_actions_enabled());
-        dm_platform::prefs::set_string("general/language", &self.general_language().to_string());
         dm_platform::prefs::set_string(
             "general/attachmentMode",
             &self.attachment_mode().to_string(),
         );
         dm_platform::prefs::set_string("general/appTheme", &self.app_theme().to_string());
         // 功能瓦片开关以布局为唯一真相，不再写偏好；只有"搜索"仍是偏好。
-        dm_platform::prefs::set_bool("tools/search", *self.tool_search());
         dm_platform::prefs::set_bool("glance/bgEnabled", *self.glance_bg_enabled());
         dm_platform::prefs::set_string("glance/background", &self.glance_bg_path().to_string());
     }
@@ -2707,9 +2471,6 @@ extern "C" {
     /// 打开（或前置）设置窗口，返回窗口 id；0 表示失败。
     fn dm_spawn_settings_window(engine_ptr: *mut core::ffi::c_void) -> u64;
 
-    /// 打开（或前置）搜索窗口，返回窗口 id；0 表示失败。
-    fn dm_spawn_search_window(engine_ptr: *mut core::ffi::c_void) -> u64;
-
     /// 打开首次运行引导窗口。
     fn dm_spawn_onboarding_window(engine_ptr: *mut core::ffi::c_void) -> u64;
 
@@ -2721,9 +2482,6 @@ extern "C" {
 
     /// 从任意线程请求打开设置窗口（排到 GUI 线程执行）。
     fn dm_request_settings_window();
-
-    /// 从任意线程请求打开搜索窗口（排到 GUI 线程执行）。
-    fn dm_request_search_window();
 
     /// 挑选一个真正画得出中文的界面字体族，返回其 UTF-8 名称。
     fn dm_apply_ui_font() -> *const core::ffi::c_char;
@@ -2842,7 +2600,6 @@ fn qml_path_for(kind: dm_core::widget::WidgetKind) -> &'static str {
         Weather => "qrc:/qt/qml/com/deskmason/probe/qml/weather.qml",
         Todo => "qrc:/qt/qml/com/deskmason/probe/qml/todo.qml",
         QuickCapture => "qrc:/qt/qml/com/deskmason/probe/qml/quickcapture.qml",
-        Search => "qrc:/qt/qml/com/deskmason/probe/qml/search.qml",
         Music => "qrc:/qt/qml/com/deskmason/probe/qml/music.qml",
     }
 }
@@ -2903,11 +2660,6 @@ pub fn request_settings_window() {
     unsafe { dm_request_settings_window() };
 }
 
-/// 请求打开搜索窗口。可从任意线程调用。
-pub fn request_search_window() {
-    unsafe { dm_request_search_window() };
-}
-
 /// 内置的英文翻译。中文是源语言，没有对应文件时直接显示源文案。
 static TRANSLATION_EN: &[u8] = include_bytes!("../../../translations/deskmason_en_US.qm");
 
@@ -2947,14 +2699,6 @@ unsafe fn open_settings_window() -> u64 {
         return 0;
     }
     unsafe { dm_spawn_settings_window(engine) }
-}
-
-unsafe fn open_search_window() -> u64 {
-    let engine = engine_slot().load(std::sync::atomic::Ordering::SeqCst);
-    if engine.is_null() {
-        return 0;
-    }
-    unsafe { dm_spawn_search_window(engine) }
 }
 
 unsafe fn spawn_tile(widget_id: &str) -> u64 {

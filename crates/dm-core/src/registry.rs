@@ -70,14 +70,6 @@ impl WidgetRegistry {
                     capsule_capable: true,
                 },
                 WidgetDescriptor {
-                    kind: Search,
-                    multi_instance: false,
-                    settings_section: Some("search"),
-                    default_size: (520, 420),
-                    min_size: (240, 200),
-                    capsule_capable: false,
-                },
-                WidgetDescriptor {
                     kind: Glance,
                     multi_instance: true,
                     settings_section: Some("glance"),
@@ -139,9 +131,8 @@ mod tests {
     }
 
     #[test]
-    fn search_is_single_instance() {
+    fn file_tile_is_multi_instance() {
         let registry = WidgetRegistry::builtin();
-        assert!(!registry.describe(WidgetKind::Search).multi_instance);
         assert!(registry.describe(WidgetKind::File).multi_instance);
     }
 }

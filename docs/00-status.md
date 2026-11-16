@@ -728,3 +728,51 @@ WM_HINTS）。改为：纯展示瓦片照旧 `input=False`，输入型瓦片（�
   已移入回收站（备份 `/tmp/dm-cleanup-backup/deskmason.desktop.bak`）。
 - 无 systemd 用户单元；`~/.config/deskmason`、`~/.local/share/deskmason` 是用户
   数据（布局/待办/偏好），保留。
+
+## 工具窗不再进任务栏 + 搜索移除 + 设置精简（2026-11-16 傍晚）
+
+### 又一次违反「只在托盘」的硬约束
+
+设置窗、搜索窗、引导窗此前都在任务栏里占了条块。A/B 像素比对（开着 vs 关掉）
+在任务栏中央 (1067,2)-(1493,36) 出现 11636 像素差异，而两次「都关着」的对照组
+只有时钟像素在变——差异确实由工具窗引起。
+
+根因：这三个 QML 里用的是 `Qt.Window`（或裸 `Qt.FramelessWindowHint`），Qt
+据此写出 `_NET_WM_WINDOW_TYPE_NORMAL` + `_KDE_NET_WM_WINDOW_TYPE_OVERRIDE`：
+`NORMAL` **不在** dde-dock `shouldSkip()` 的类型白名单（`DIALOG/UTILITY/COMBO/
+DESKTOP/DND/DOCK/DROPDOWN_MENU/MENU/NOTIFICATION/POPUP_MENU/SPLASH/TOOLBAR/
+TOOLTIP`）。并且 `show()` 会重写 `_NET_WM_STATE`，把映射前写入的
+`SKIP_TASKBAR` 一并抹掉。
+
+修法：三个窗口统一改成 `Qt.Tool | Qt.FramelessWindowHint`，让 Qt 自己写
+`_NET_WM_WINDOW_TYPE_UTILITY`。改完 `_NET_WM_STATE` 里是
+`SKIP_TASKBAR, SKIP_PAGER`，A/B 比对变成**像素级零差异**。
+
+### 搜索功能移除
+
+用户决定彻底不做搜索。删除面：`WidgetKind::Search` 变体与 registry 描述、
+`dm-platform/src/search.rs`、`search.qml`、`SearchContentRust`、AppState 的
+`open_search` / `tool_search`、`dm_spawn_search_window` /
+`dm_request_search_window` 两个 FFI、C++ 侧窗口创建块、托盘菜单项、设置页
+开关、build.rs 清单、翻译 search context、README 表格行与引导页文案。
+
+### 设置面板精简（43 → 24 项，8 页 → 7 页）
+
+| 处理 | 项 |
+| --- | --- |
+| 删整页 | 胶囊模式（7 项）。胶囊实际从未在瓦片侧生效，只存在于设置项 |
+| 删纯自适应 | 语言、使用系统强调色、显示密度、显示与隐藏动画 |
+| 删固定化 | 窗口材质与边框（固定云母）、格子窗口与标题栏 |
+| 删细分外观 | 文件格子的图标大小、密度 |
+| 保留 | 关于页（DeskMason / 版本 / 数据目录）、诊断页备份与备份目录 |
+
+### 验证
+
+- 逐页 OCR 巡检 7 页：常规 3 项、外观 3 项、文件格子 5 项、功能格子 5 项、
+  快捷与交互 3 项、诊断 2 项、关于 3 项，文案与预期逐条相符。
+- 6 块瓦片稳态：`TYPE=UTILITY`、`STATE=SKIP_TASKBAR,SKIP_PAGER,BELOW`；
+  任务栏图标簇 13 个，位置与「工具窗全关」基准完全一致。
+- 托盘菜单只剩 5 项：显示/隐藏、新建文件格子、设置、分隔、退出。
+- 托盘「退出」：进程退出、残留窗口 0。
+- 质量门：`cargo fmt --all -- --check` 通过、`clippy -D warnings` 零告警、
+  `cargo test --workspace` **152 passed / 0 failed**（原 159，减去 7 项搜索测试）。

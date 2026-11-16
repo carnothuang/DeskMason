@@ -19,20 +19,17 @@ pub enum WidgetKind {
     Todo,
     /// 音乐。
     Music,
-    /// 全局搜索。
-    Search,
     /// 时光。
     Glance,
 }
 
 impl WidgetKind {
-    pub const ALL: [WidgetKind; 7] = [
+    pub const ALL: [WidgetKind; 6] = [
         WidgetKind::File,
         WidgetKind::QuickCapture,
         WidgetKind::Weather,
         WidgetKind::Todo,
         WidgetKind::Music,
-        WidgetKind::Search,
         WidgetKind::Glance,
     ];
 
@@ -44,7 +41,6 @@ impl WidgetKind {
             WidgetKind::Weather => "weather",
             WidgetKind::Todo => "todo",
             WidgetKind::Music => "music",
-            WidgetKind::Search => "search",
             WidgetKind::Glance => "glance",
         }
     }
@@ -57,7 +53,6 @@ impl WidgetKind {
             WidgetKind::Weather => "widget.weather.name",
             WidgetKind::Todo => "widget.todo.name",
             WidgetKind::Music => "widget.music.name",
-            WidgetKind::Search => "widget.search.name",
             WidgetKind::Glance => "widget.glance.name",
         }
     }
