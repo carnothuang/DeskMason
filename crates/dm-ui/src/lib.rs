@@ -400,9 +400,16 @@ mod qobject {
         #[qinvokable]
         fn host_visible(&self) -> bool;
 
-        /// 取走一条宿主命令：`new-tile` / `quit`，没有则返回空串。
+        /// 取走一条宿主命令（当前只有 `new-tile`），没有则返回空串。
+        ///
+        /// 队列只放"所有窗口分支一致"的 QML 交互；退出 / 设置 / 搜索已改为
+        /// 由 Rust 直接排到 GUI 线程，避免被别的窗口抢走后丢失。
         #[qinvokable]
         fn take_host_command(&self) -> QString;
+
+        /// 界面字体族名（启动时实测选出，画不出中文的族会被跳过）。
+        #[qinvokable]
+        fn ui_font_family(&self) -> QString;
 
         /// 退出应用（托盘"退出"用；QML 的 Qt.quit() 在本架构下没有接收者）。
         #[qinvokable]
@@ -1151,7 +1158,12 @@ impl qobject::AppState {
     }
 
     fn quit_app(&self) {
+        // dm_app_quit 内部用 QueuedConnection 回到 GUI 线程，任意线程都安全。
         unsafe { dm_app_quit() };
+    }
+
+    fn ui_font_family(&self) -> QString {
+        QString::from(ui_font_family())
     }
 
     fn open_settings(&self) {
@@ -2653,6 +2665,23 @@ pub extern "C" fn dm_apply_desktop_layer_atoms(window_id: u64) -> bool {
     result.is_ok()
 }
 
+/// 供 C++ 胶水调用：写全瓦片窗口的映射前属性（类型 / 状态 / Motif / 输入）。
+///
+/// 与 [`dm_apply_desktop_layer_atoms`] 分开是有意的：那个函数服务于真正的
+/// 桌面层窗口（`_NET_WM_WINDOW_TYPE_DESKTOP`），而瓦片必须是
+/// `_NET_WM_WINDOW_TYPE_UTILITY`——只有它和另外几个白名单类型会被 dde-dock
+/// 的 `shouldSkip()` 跳过，保证瓦片永远不进任务栏。
+///
+/// `accepts_input` 决定 `WM_HINTS.input`：输入型瓦片（待办/随记/天气）为
+/// true，窗管点击时才会把键盘与输入法焦点交过去。
+///
+/// # Safety
+/// 调用方需保证 `window_id` 是有效的 X11 窗口 id，且窗口尚未映射。
+#[no_mangle]
+pub extern "C" fn dm_apply_tile_layer_atoms(window_id: u64, accepts_input: bool) -> bool {
+    dm_platform::x11::apply_tile_layer(window_id as u32, "DeskMason", accepts_input).is_ok()
+}
+
 /// 供 C++ 胶水调用：给弹窗类窗口（搜索 / 设置）开启 KWin 背景模糊。
 /// 材质档位由设置里的 `appearance/material` 决定：opaque 时不加模糊。
 #[no_mangle]
@@ -2685,11 +2714,24 @@ extern "C" {
     fn dm_spawn_onboarding_window(engine_ptr: *mut core::ffi::c_void) -> u64;
 
     /// 退出 QCoreApplication 事件循环。
+    ///
+    /// 内部用 QueuedConnection 排到 GUI 线程执行，所以从托盘线程、热键线程
+    /// 或任意 QML 窗口里调用都安全。
     fn dm_app_quit();
 
+    /// 从任意线程请求打开设置窗口（排到 GUI 线程执行）。
+    fn dm_request_settings_window();
+
+    /// 从任意线程请求打开搜索窗口（排到 GUI 线程执行）。
+    fn dm_request_search_window();
+
+    /// 挑选一个真正画得出中文的界面字体族，返回其 UTF-8 名称。
+    fn dm_apply_ui_font() -> *const core::ffi::c_char;
+
     /// 由 C++ 胶水实现：用 QML 组件创建一个瓦片窗口并贴到桌面层。
-    /// 所有瓦片统一 WindowDoesNotAcceptFocus 保证外观一致；`accepts_focus`
-    /// 只决定该瓦片是否需要在鼠标按下时由 C++ 显式接管 X 输入焦点。
+    /// `accepts_focus` 决定该瓦片的 `WM_HINTS.input`：输入型瓦片为 true，
+    /// 窗管点击时会把键盘/输入法焦点交过去；纯展示瓦片为 false，完全不
+    /// 参与焦点切换。
     fn dm_spawn_tile(
         engine_ptr: *mut core::ffi::c_void,
         widget_id: *const core::ffi::c_char,
@@ -2733,10 +2775,13 @@ pub extern "C" fn dm_keep_window_below_x11(window_id: u64) {
     let _ = dm_platform::x11::keep_tile_below(window_id as u32);
 }
 
-/// C++ 胶水回调：映射后放开激活焦点时，把窗口类型写回统一值。
+/// C++ 胶水回调：把瓦片窗口的 EWMH 三件套复位（诊断/兜底用）。
+///
+/// 正常创建流程已不调用它——标志在 winId() 前定好、映射后不改，属性从
+/// 一开始就是正确的。保留此入口供手动诊断属性被外部改写的情况。
 ///
 /// # Safety
-/// 由 window_glue.cpp 调用，`window_id` 必须是有效的 X11 窗口 id。
+/// 调用方需保证 `window_id` 是有效的 X11 窗口 id。
 #[no_mangle]
 pub extern "C" fn dm_apply_tile_window_type(window_id: u64) {
     let _ = dm_platform::x11::apply_tile_window_type(window_id as u32);
@@ -2814,6 +2859,53 @@ pub fn install_translations() {
 
 pub fn apply_light_theme() {
     unsafe { dm_apply_light_theme() };
+}
+
+/// 选定界面字体并返回族名。
+///
+/// 中文界面"整窗豆腐块"的成因是字体族解析到了读不出字形的字体文件；这里在
+/// 启动时用真实字形探测挑一个可用的族，见 C++ 侧 `dm_apply_ui_font` 的注释。
+pub fn apply_ui_font() -> String {
+    let ptr = unsafe { dm_apply_ui_font() };
+    if ptr.is_null() {
+        return String::new();
+    }
+    unsafe { std::ffi::CStr::from_ptr(ptr) }
+        .to_string_lossy()
+        .into_owned()
+}
+
+static UI_FONT_FAMILY: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 启动时调用一次：挑字体并缓存族名，供 QML 侧按需读取。
+pub fn init_ui_font() -> &'static str {
+    UI_FONT_FAMILY
+        .get_or_init(|| {
+            let family = apply_ui_font();
+            eprintln!("界面字体: {family}");
+            family
+        })
+        .as_str()
+}
+
+/// 当前界面字体族（未初始化时返回空串）。
+pub fn ui_font_family() -> &'static str {
+    UI_FONT_FAMILY.get().map(String::as_str).unwrap_or("")
+}
+
+/// 退出应用。可从任意线程调用（内部排到 GUI 线程）。
+pub fn quit_app() {
+    unsafe { dm_app_quit() };
+}
+
+/// 请求打开设置窗口。可从任意线程调用。
+pub fn request_settings_window() {
+    unsafe { dm_request_settings_window() };
+}
+
+/// 请求打开搜索窗口。可从任意线程调用。
+pub fn request_search_window() {
+    unsafe { dm_request_search_window() };
 }
 
 /// 内置的英文翻译。中文是源语言，没有对应文件时直接显示源文案。

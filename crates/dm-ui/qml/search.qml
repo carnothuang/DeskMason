@@ -14,6 +14,8 @@ ApplicationWindow {
     flags: Qt.FramelessWindowHint
     color: "transparent"
     title: qsTr("DeskMason 搜索")
+    font.family: app.ui_font_family() !== "" ? app.ui_font_family()
+                                             : Qt.application.font.family
 
     palette.window: "#202022"
     palette.windowText: "#F2F2F2"
@@ -77,17 +79,11 @@ ApplicationWindow {
                 window.hostEpoch = current
                 window.visible = app.host_visible()
             }
+            // 队列里只剩"新建文件格子"这类所有窗口处理一致的请求；退出 /
+            // 设置 / 搜索由 Rust 直接排到 GUI 线程，不走这个队列。
             var command = app.take_host_command()
             if (command === "new-tile")
                 newTileDialog.open()
-            else if (command.indexOf("new-tile:") === 0)
-                app.open_settings()
-            else if (command === "search")
-                app.open_search()
-            else if (command === "settings")
-                app.open_settings()
-            else if (command === "quit")
-                app.quit_app()
         }
     }
 

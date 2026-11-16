@@ -38,6 +38,14 @@ ApplicationWindow {
     palette.highlightedText: "#FFFFFF"
     palette.placeholderText: cTextDim
 
+    // 界面字体由 C++ 在启动时实测选出（跳过画不出中文的族），这里显式继承：
+    // Qt Quick Controls 的文字默认跟 DDE 主题字体走，主题字体一旦落在没有
+    // 字形的字体文件上，整窗就全是空心方框。AppState 只用来取这个族名。
+    AppState { id: app }
+
+    font.family: app.ui_font_family() !== "" ? app.ui_font_family()
+                                             : Qt.application.font.family
+
     SettingsPanel {
         id: settings
     }

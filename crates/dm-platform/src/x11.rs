@@ -563,18 +563,17 @@ pub fn keep_tile_below(window_id: u32) -> PlatformResult<()> {
     // 顺带重申 TYPE 与 Motif 提示：Qt 的标志同步可能在任意时机（输入框
     // 激活、输入法弹窗、平台窗口事件）异步重写这三组属性，一次性延迟
     // 写回覆盖不到所有时机。周期性重申保证任何重写都会在 1 秒内被纠正：
-    // STATE 保持 SKIP_TASKBAR（不进任务栏），TYPE 保持 OVERRIDE（KWin
-    // 透明合成），MOTIF 保持禁关闭（窗管不能强杀瓦片）。
+    // STATE 保持 SKIP_TASKBAR（不进任务栏），TYPE 保持 UTILITY（dde-dock
+    // 的 shouldSkip() 白名单类型），MOTIF 保持禁关闭（窗管不能强杀瓦片）。
     let ty = intern(&conn, "_NET_WM_WINDOW_TYPE")?;
-    let override_type = intern(&conn, "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE")?;
-    let normal = intern(&conn, "_NET_WM_WINDOW_TYPE_NORMAL")?;
+    let utility_type = intern(&conn, "_NET_WM_WINDOW_TYPE_UTILITY")?;
     let motif = intern(&conn, "_MOTIF_WM_HINTS")?;
     conn.change_property32(
         PropMode::REPLACE,
         window_id,
         ty,
         AtomEnum::ATOM,
-        &[override_type, normal],
+        &[utility_type],
     )?;
     conn.change_property32(
         PropMode::REPLACE,
@@ -629,23 +628,19 @@ pub fn keep_tile_below(window_id: u32) -> PlatformResult<()> {
     Ok(())
 }
 
-/// 把瓦片窗口的 EWMH 类型、状态与 Motif 提示写回统一值。
+/// 把瓦片窗口的 EWMH 类型、状态与 Motif 提示写回统一值（诊断/兜底用）。
 ///
-/// Qt 会在窗口标志变化时异步重写 `_NET_WM_WINDOW_TYPE`、`_NET_WM_STATE`
-/// 与 `_MOTIF_WM_HINTS`：放行激活焦点的瓦片（天气/待办/随记）在映射后
-/// 放开焦点时，这轮同步会把原生写入的三件套（SKIP_TASKBAR/SKIP_PAGER/
-/// BELOW、OVERRIDE+NORMAL、Motif"禁关闭"）全部冲掉——KWin 随即把瓦片
-/// 当普通客户接管：进任务栏、dde-dock 出现"关闭"动作且能强杀窗口
-/// （关闭天气瓦片消失的现象）。必须在 Qt 同步完成**之后**调用本函数
-/// （见 window_glue.cpp 的延迟写回），顺序：STATE → TYPE → MOTIF。
+/// 正常流程不再依赖本函数：窗口标志在 `winId()` 之前一次性定好，映射后
+/// 不改动，Qt 不会异步重写，映射前写入的三件套从首次 MapRequest 起就
+/// 稳定保持正确。本函数保留给手动诊断：若某次运行发现某块瓦片的属性
+/// 被外部因素改写，可显式调用它复位。顺序：STATE → TYPE → MOTIF。
 pub fn apply_tile_window_type(window_id: u32) -> PlatformResult<()> {
     if std::env::var_os("DISPLAY").is_none() {
         return Err(PlatformError::NoX11Display);
     }
     let (conn, _screen_num) = x11rb::connect(None)?;
     let ty = intern(&conn, "_NET_WM_WINDOW_TYPE")?;
-    let override_type = intern(&conn, "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE")?;
-    let normal = intern(&conn, "_NET_WM_WINDOW_TYPE_NORMAL")?;
+    let utility_type = intern(&conn, "_NET_WM_WINDOW_TYPE_UTILITY")?;
     let state = intern(&conn, "_NET_WM_STATE")?;
     let skip_taskbar = intern(&conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
     let skip_pager = intern(&conn, "_NET_WM_STATE_SKIP_PAGER")?;
@@ -663,7 +658,7 @@ pub fn apply_tile_window_type(window_id: u32) -> PlatformResult<()> {
         window_id,
         ty,
         AtomEnum::ATOM,
-        &[override_type, normal],
+        &[utility_type],
     )?;
     // 与预映射一致：flags=3, functions=33 (MWM_FUNC_ALL|MWM_FUNC_CLOSE)，
     // 唯独禁用关闭，防止窗管把瓦片当普通客户强杀。
@@ -678,10 +673,133 @@ pub fn apply_tile_window_type(window_id: u32) -> PlatformResult<()> {
     Ok(())
 }
 
+/// `WM_HINTS` 里的 `InputHint` 位：窗口接受键盘输入。
+const XWMH_INPUT_HINT: u32 = 1;
+
+/// 只改 `WM_HINTS` 的 `input` 字段，其余位（尤其 `window_group`）保持原样。
+///
+/// 为什么必须写：`Qt::WindowDoesNotAcceptFocus` 会让 Qt 写出
+/// `WM_HINTS.input = False`，而窗管正是靠这一位判断"窗口要不要键盘焦点"。
+/// 结果就是鼠标点击确实落在瓦片上（Qt 收到事件、光标也变了），KWin 却拒绝
+/// 把 X 输入焦点交过去，输入框敲字没反应。
+///
+/// 所以策略是：纯展示瓦片继续 input=False（不参与焦点切换，fcitx5 上下文
+/// 不会来回横跳）；输入瓦片（待办/随记/天气）写 input=True，KWin 在点击时
+/// 正常聚焦。
+fn write_input_hint(
+    conn: &RustConnection,
+    window_id: u32,
+    accepts_input: bool,
+) -> PlatformResult<()> {
+    // 先读再改：Qt 已经把 window_group（组 leader）写进去了，整体覆盖会让
+    // 窗管的焦点回退与任务栏分组失去依据。
+    let mut hints: Vec<u32> = match conn
+        .get_property(
+            false,
+            window_id,
+            AtomEnum::WM_HINTS,
+            AtomEnum::WM_HINTS,
+            0,
+            9,
+        )
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+    {
+        Some(reply) => reply
+            .value32()
+            .map(|fields| fields.collect())
+            .unwrap_or_default(),
+        None => Vec::new(),
+    };
+    // XWMHints 固定 9 个 CARD32 字段：flags, input, initial_state, icon_pixmap,
+    // icon_window, icon_x, icon_y, icon_mask, window_group。
+    hints.resize(9, 0);
+    hints[0] |= XWMH_INPUT_HINT;
+    hints[1] = u32::from(accepts_input);
+    conn.change_property32(
+        PropMode::REPLACE,
+        window_id,
+        AtomEnum::WM_HINTS,
+        AtomEnum::WM_HINTS,
+        &hints,
+    )?;
+    Ok(())
+}
+
+/// 瓦片窗口的映射前属性：类型 / 状态 / Motif / 输入提示，一次写全。
+///
+/// 四个属性的取值都不是随口定的：
+///
+/// - `_NET_WM_WINDOW_TYPE_UTILITY`：dde-dock 的 `shouldSkip()` 先看
+///   `SKIP_TASKBAR`，否则拿 `_NET_WM_WINDOW_TYPE` 与一组白名单（DIALOG /
+///   UTILITY / TOOLBAR / DESKTOP…）比对。`NORMAL` 与 `OVERRIDE` 都不在
+///   白名单里，所以类型必须显式写成 UTILITY，否则瓦片会被收进任务栏，
+///   而且 dock 会缓存首次判定，事后补属性也撤不掉图标。
+/// - `SKIP_TASKBAR + SKIP_PAGER + BELOW`：托盘是唯一常驻入口；瓦片既不进
+///   任务栏也不进翻页器，并且永远压在普通窗口之下。
+/// - `_MOTIF_WM_HINTS = [3, 33]`：`MWM_FUNC_ALL | MWM_FUNC_CLOSE`，唯独
+///   禁用关闭——窗管不能强杀瓦片，退出统一走托盘菜单。
+/// - `WM_HINTS.input`：见 [`write_input_hint`]。
+///
+/// 必须在窗口映射**之前**调用：EWMH 只在 MapRequest 时读取类型与状态，
+/// 映射后再改会被窗管忽略（MOTIF 与 WM_HINTS 同理，KWin 缓存首读结果）。
+pub fn apply_tile_layer(window_id: u32, title: &str, accepts_input: bool) -> PlatformResult<()> {
+    if std::env::var_os("DISPLAY").is_none() {
+        return Err(PlatformError::NoX11Display);
+    }
+    let (conn, _screen_num) = x11rb::connect(None)?;
+    let ty = intern(&conn, "_NET_WM_WINDOW_TYPE")?;
+    let utility_type = intern(&conn, "_NET_WM_WINDOW_TYPE_UTILITY")?;
+    let state = intern(&conn, "_NET_WM_STATE")?;
+    let skip_taskbar = intern(&conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
+    let skip_pager = intern(&conn, "_NET_WM_STATE_SKIP_PAGER")?;
+    let below = intern(&conn, "_NET_WM_STATE_BELOW")?;
+    let motif = intern(&conn, "_MOTIF_WM_HINTS")?;
+    let desktop_hint = intern(&conn, "_NET_WM_DESKTOP")?;
+    let win = window_id;
+
+    if !title.is_empty() {
+        conn.change_property8(
+            PropMode::REPLACE,
+            win,
+            AtomEnum::WM_NAME,
+            AtomEnum::STRING,
+            title.as_bytes(),
+        )?;
+    }
+    conn.change_property8(
+        PropMode::REPLACE,
+        win,
+        AtomEnum::WM_CLASS,
+        AtomEnum::STRING,
+        b"deskmason\0DeskMason\0",
+    )?;
+    conn.change_property32(PropMode::REPLACE, win, ty, AtomEnum::ATOM, &[utility_type])?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        state,
+        AtomEnum::ATOM,
+        &[skip_taskbar, skip_pager, below],
+    )?;
+    conn.change_property32(PropMode::REPLACE, win, motif, motif, &[3, 33, 0, 0, 0])?;
+    // 所有工作区可见：瓦片是桌面组件，不属于某一个虚拟桌面。
+    conn.change_property32(
+        PropMode::REPLACE,
+        win,
+        desktop_hint,
+        AtomEnum::CARDINAL,
+        &[0xFFFF_FFFF],
+    )?;
+    write_input_hint(&conn, win, accepts_input)?;
+    conn.flush()?;
+    Ok(())
+}
+
 /// 给普通应用窗口（设置/搜索/引导）补 SKIP_TASKBAR / SKIP_PAGER。
 ///
 /// DeskMason 的常驻入口是托盘（SNI），不该像普通应用一样在任务栏
-/// 占一个条块。瓦片窗口在 apply_desktop_layer 里已带上这些状态；
+/// 占一个条块。瓦片窗口在 apply_tile_layer 里已带上这些状态；
 /// 这三个工具窗走普通 Window 路径创建，需要单独补。
 /// 映射前调用才可靠（KWin 在 MapRequest 时读取任务栏策略）。
 pub fn skip_taskbar(window_id: u32) -> PlatformResult<()> {

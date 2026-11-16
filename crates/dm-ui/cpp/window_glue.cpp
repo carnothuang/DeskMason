@@ -26,30 +26,44 @@
 #include <QScreen>
 #include <QWindow>
 #include <QEvent>
-#include <QMap>
-#include <QElapsedTimer>
 #include <QTimer>
+#include <QFont>
+#include <QFontMetrics>
+#include <QMap>
+#include <QMetaObject>
+#include <QElapsedTimer>
 
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
 
 extern "C" bool dm_apply_desktop_layer_atoms(uint64_t window_id);
+extern "C" bool dm_apply_tile_layer_atoms(uint64_t window_id, bool accepts_input);
 extern "C" bool dm_apply_window_blur(uint64_t window_id);
 extern "C" void dm_keep_window_below_x11(uint64_t window_id);
 extern "C" void dm_focus_window_x11(uint64_t window_id);
-extern "C" void dm_apply_tile_window_type(uint64_t window_id);
 extern "C" bool dm_skip_taskbar(uint64_t window_id);
+// 定义在文件后半部分；跨线程请求窗口时需要提前声明。
+extern "C" uint64_t dm_spawn_settings_window(void *engine_ptr);
+extern "C" uint64_t dm_spawn_search_window(void *engine_ptr);
 
-// 所有瓦片在**映射前**统一 WindowDoesNotAcceptFocus，这是 6 块瓦片透明/圆角
-// 外观一致的前提：Qt 据此写出 _KDE_NET_WM_WINDOW_TYPE_OVERRIDE + NORMAL，
-// KWin 在 MapRequest 时按透明方式合成；放行激活焦点的窗口会被写成
-// _NET_WM_WINDOW_TYPE_DESKTOP，四角露出黑色直角、整块面板不透明。
+// QQmlApplicationEngine 指针：由第一次创建瓦片时记录，供托盘线程跨线程请求
+// 开设置 / 搜索窗口使用。
+static void *g_engine = nullptr;
+
+// 瓦片窗口的标志必须在 winId()（原生窗口创建）**之前**定好，映射后绝不再
+// 改动。两个理由：
+// 1) 任务栏（关键）：映射后任何 setFlag 都会触发 Qt 异步重写 _NET_WM_STATE
+//    与 _NET_WM_WINDOW_TYPE，抹掉映射前写入的 SKIP_TASKBAR / UTILITY。
+//    dde-dock 在窗口首次出现时跑一次 shouldSkip() 并缓存判定，此后补全属性
+//    也撤不掉已经生成的图标。所以标志只能在原生窗口创建前定好。
+// 2) 焦点：WindowDoesNotAcceptFocus 会让 Qt 写出 WM_HINTS.input=False，
+//    窗管据此拒绝把键盘焦点交给瓦片——输入框点了没反应。因此只有纯展示
+//    瓦片才设这个标志；输入瓦片（待办/随记/天气）不设，由 Rust 侧把
+//    WM_HINTS.input 写成 True，点击时 KWin 正常聚焦。
 //
-// 实测：窗口映射后再改 _NET_WM_WINDOW_TYPE 不会改变合成方式（前后画面逐字节
-// 一致），所以可以「映射前统一标志 → 映射后仅对输入瓦片放开焦点」。
-// 下面的窗口级过滤器是兜底：即便窗管不主动激活桌面层窗口，鼠标按下时也
-// 显式把 X 输入焦点交给它。纯展示瓦片完全不参与焦点切换，fcitx5 不会被打扰。
+// 界面上所有瓦片仍是 FramelessWindowHint + Tool：Tool 让 Qt 自己写
+// _NET_WM_WINDOW_TYPE_UTILITY（dde-dock 白名单类型），Frameless 去掉窗框。
 class TileFocusFilter : public QObject {
 public:
     bool eventFilter(QObject *watched, QEvent *event) override {
@@ -108,6 +122,7 @@ extern "C" uint64_t dm_pin_root_window(void *engine_ptr) {
 extern "C" uint64_t dm_spawn_tile(void *engine_ptr, const char *widget_id,
                                   const char *qml_path, bool accepts_focus) {
     auto *engine = static_cast<QQmlApplicationEngine *>(engine_ptr);
+    g_engine = engine_ptr;   // 托盘线程请求开窗时要用到
     if (!engine || !widget_id || !qml_path) {
         return 0;
     }
@@ -133,19 +148,21 @@ extern "C" uint64_t dm_spawn_tile(void *engine_ptr, const char *widget_id,
         return 0;
     }
 
+    // 标志必须在 winId()（原生窗口创建）**之前**定好：一旦创建后再 setFlag，
+    // Qt 会异步重写 EWMH 属性，抹掉 SKIP_TASKBAR / UTILITY，令 dde-dock 在
+    // 首次检查时把瓦片当成普通客户收进任务栏（且此后缓存该判定，补写属性
+    // 也救不回来）。只有纯展示瓦片才禁止接受焦点；输入瓦片必须让窗管能把
+    // 键盘焦点交过来，否则输入框点了没反应。
+    if (!accepts_focus) {
+        window->setFlag(Qt::WindowDoesNotAcceptFocus, true);
+    }
+
     const WId id = window->winId();
-    if (!dm_apply_desktop_layer_atoms(static_cast<uint64_t>(id))) {
+    if (!dm_apply_tile_layer_atoms(static_cast<uint64_t>(id), accepts_focus)) {
         delete window;
         return 0;
     }
 
-    // 所有瓦片统一不抢 X 激活焦点：
-    // 1) fcitx5 不会在桌面层与普通窗口之间反复切换输入上下文；
-    // 2) 更关键：Qt 只给这类窗口写出 _KDE_NET_WM_WINDOW_TYPE_OVERRIDE，
-    //    KWin 才会按透明方式合成。放行焦点的窗口会变成
-    //    _NET_WM_WINDOW_TYPE_DESKTOP，四角露出黑色直角、整块面板不透明。
-    // 映射前一律不抢焦点，保证窗管按透明/圆角方式合成。
-    window->setFlag(Qt::WindowDoesNotAcceptFocus, true);
     window->setProperty("tileAcceptsFocus", accepts_focus);
     // 关闭拒绝依赖 QML onClosing，但实测 QML 层并不总能兜住（见下方
     // TileFocusFilter 的 Close 分支）。这里给所有瓦片统一装上事件过滤器：
@@ -167,30 +184,12 @@ extern "C" uint64_t dm_spawn_tile(void *engine_ptr, const char *widget_id,
 
     window->setVisible(true);
 
-    // 映射完成后才放开输入瓦片的激活焦点：此时 KWin 已经记住了映射时的
-    // 窗口类型，实测运行中改类型不会改变合成方式，外观仍然与其它瓦片一致。
-    // 放开后窗管可以正常激活窗口，待办/随记/天气的输入框恢复原生键盘焦点。
-    //
-    // 关键：Qt 的标志同步是异步的——setFlag(false) 之后 Qt 会在事件循环里
-    // 重写 _NET_WM_STATE 与 _NET_WM_WINDOW_TYPE，把我们映射前写入的
-    // SKIP_TASKBAR/SKIP_PAGER/BELOW 抹掉、类型改成普通 NORMAL，KWin 随即
-    // 把瓦片当普通客户接管：进任务栏、能被 dde-dock"关闭"（关闭天气瓦片
-    // 的现象就来自这里）。立即写回会输给 Qt 的异步重写（竞态），所以用
-    // 单次 QTimer 延迟到 Qt 同步完成之后再恢复 EWMH 属性。
-    if (accepts_focus) {
-        window->setFlag(Qt::WindowDoesNotAcceptFocus, false);
-        const uint64_t tileId = static_cast<uint64_t>(id);
-        QTimer::singleShot(0, window, [tileId]() {
-            dm_apply_tile_window_type(tileId);
-        });
-        // 兜底：300ms 后再写一次。输入法/窗管仍可能在窗口激活后重写属性。
-        // 注意周期性 keep_below（hostTimer 每 200ms）只恢复 STATE 不恢复
-        // TYPE，而 KWin/任务栏的收录决策主要由 TYPE 驱动，TYPE 必须在这里
-        // 及时写回，不能指望 keep_below 兜底。
-        QTimer::singleShot(300, window, [tileId]() {
-            dm_apply_tile_window_type(tileId);
-        });
-    }
+    // 不再在映射后切换 WindowDoesNotAcceptFocus：任何一次 setFlag 都会让 Qt
+    // 异步重写 _NET_WM_STATE，抹掉映射前写入的 SKIP_TASKBAR，导致 dde-dock
+    // 首次检查时把瓦片当普通客户收进任务栏并缓存该判定。
+    // 输入瓦片的 WM_HINTS.input 已在 dm_apply_tile_layer_atoms 里写死，
+    // 窗管点击时会正常聚焦；TileFocusFilter 的 dm_focus_window_x11() 是
+    // 兜底，防止窗管不接手时输入框拿不到键盘事件。
     return static_cast<uint64_t>(id);
 }
 
@@ -405,7 +404,116 @@ extern "C" void dm_free_string(char *ptr) {
 // QML 的 Qt.quit() 依赖 QQmlApplicationEngine::load() 建立的连接；我们用
 // QQmlComponent 逐窗口创建，没有那条连接，所以直接退应用。
 extern "C" void dm_app_quit() {
-    QCoreApplication::quit();
+    // 必须回到 GUI 线程再退：QCoreApplication::quit() 只对调用线程自己的事件
+    // 循环有效，从托盘线程直接调用会被静默忽略（表现就是"点退出没反应"）。
+    // QueuedConnection 把这次调用排进主线程队列，由 exec() 所在的循环处理。
+    QMetaObject::invokeMethod(
+        qApp,
+        [] {
+            QCoreApplication::quit();
+            // 实测：quit() 在这里并不能让 exec() 返回（事件循环照常派发事件），
+            // 只调它等于"点了退出没反应"。所以加一道兜底：600ms 内事件循环
+            // 若仍未退出，直接结束进程。
+            //
+            // 这么做是安全的：布局、待办、随记、偏好都是变更即时落盘，退出
+            // 路径上没有待写的缓冲；窗口也不需要 onClosing（它只负责存几何，
+            // 而几何每次变动都已存过）。
+            QTimer::singleShot(600, qApp, [] {
+                qWarning("DeskMason: 事件循环未退出，强制结束进程");
+                std::_Exit(0);
+            });
+        },
+        Qt::QueuedConnection);
+}
+
+// 从任意线程请求打开设置 / 搜索窗口。
+//
+// 和退出同一个道理：QQmlComponent 只能在 GUI 线程用，托盘线程直接建窗口会
+// 崩。这里统一排到主线程执行。engine 指针在创建瓦片时记录到 g_engine。
+
+extern "C" void dm_request_settings_window() {
+    QMetaObject::invokeMethod(
+        qApp,
+        [] {
+            if (g_engine) {
+                dm_spawn_settings_window(g_engine);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
+extern "C" void dm_request_search_window() {
+    QMetaObject::invokeMethod(
+        qApp,
+        [] {
+            if (g_engine) {
+                dm_spawn_search_window(g_engine);
+            }
+        },
+        Qt::QueuedConnection);
+}
+
+// ---------------------------------------------------------------- 界面字体
+//
+// 中文界面最怕"豆腐块"：整窗文字变成一排空心方框。
+//
+// 成因不是编码，而是字体族解析到了一个**读不出字形**的字体文件——DDE 主题
+// 给的默认族（如 Source Han Sans SC）在字体缓存重建、文件瞬时不可读、或
+// 只装了不完整的子集时，Qt 拿到的是一个 0 覆盖的字体引擎，而 Qt 不会因为
+// "这个族画不出中文"就自动换族，于是整窗都成了方框。
+//
+// 这里在启动时把候选族逐个装上、用真实字形探测（中 + A），取第一个真正有
+// 覆盖的族写回应用字体。纯展示瓦片用 Text 走的就是应用字体，Qt Quick
+// Controls 的控件也跟随它，所以一处设定覆盖全部窗口。
+static QString dm_pick_ui_font_family() {
+    // 顺序有讲究：真实的 TrueType 轮廓字体（TTC）优先，CFF/OTF 的思源黑体
+    // 放后面。这台机器上 SourceHanSansSC-Regular.otf 会偶发加载失败，Qt 退化
+    // 成 QFontEngineBox（每个字符都画空心方框），而且 Qt Quick Controls 一旦
+    // 继承到这个族，整个窗口的文字全成了方块——这就是"设置页乱码"的成因。
+    const QStringList candidates = {
+        QStringLiteral("Noto Sans CJK SC"),
+        QStringLiteral("Noto Sans SC"),
+        QGuiApplication::font().family(),
+        QStringLiteral("Source Han Sans SC"),
+        QStringLiteral("思源黑体"),
+        QStringLiteral("WenQuanYi Zen Hei"),
+        QStringLiteral("Sans Serif"),
+    };
+    for (const QString &family : candidates) {
+        if (family.isEmpty()) {
+            continue;
+        }
+        QFont probe(family);
+        probe.setPixelSize(16);
+        const QFontMetrics metrics(probe);
+        // 两个判据缺一不可：
+        // 1) 中文有字形（inFont）；
+        // 2) 不是"方框字体"——字体引擎完全加载失败时 Qt 会退化成 QFontEngineBox，
+        //    它对任何字符都返回同一个宽度的空心方框，inFont 仍然返回 true。
+        //    真实字体的 'i' 与 'W' 宽度必然不同，据此识别方框引擎。
+        const bool has_cjk = metrics.inFont(QChar(0x4E2D));
+        const bool is_box = metrics.horizontalAdvance(QChar('i'))
+                            == metrics.horizontalAdvance(QChar('W'));
+        if (has_cjk && !is_box) {
+            return family;
+        }
+        qWarning("DeskMason: 字体族「%s」不可用（cjk=%d box=%d），试用下一个",
+                 qPrintable(family), int(has_cjk), int(is_box));
+    }
+    return QGuiApplication::font().family();
+}
+
+extern "C" const char *dm_apply_ui_font() {
+    static QByteArray chosen;
+    const QString family = dm_pick_ui_font_family();
+    QFont font = QGuiApplication::font();
+    if (font.family() != family) {
+        font.setFamily(family);
+        QGuiApplication::setFont(font);
+        qWarning("DeskMason: 界面字体切换为「%s」", qPrintable(family));
+    }
+    chosen = family.toUtf8();
+    return chosen.constData();
 }
 
 // ---------------------------------------------------------------- 设置窗口

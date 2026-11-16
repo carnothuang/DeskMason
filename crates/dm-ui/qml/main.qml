@@ -9,7 +9,11 @@ ApplicationWindow {
     property string widgetId: ""
 
     visible: false
-    flags: Qt.FramelessWindowHint
+    // Qt::Tool 让 Qt 自己把 _NET_WM_WINDOW_TYPE 写成 UTILITY——dde-dock 的
+    // shouldSkip() 明确跳过这个类型，瓦片因此永远不会进任务栏。
+    // 只靠 _NET_WM_STATE_SKIP_TASKBAR 不够：Qt 在 show() 时会重写状态，
+    // 而 dock 只在窗口映射那一刻判定一次并缓存。
+    flags: Qt.Tool | Qt.FramelessWindowHint
     color: "transparent"
 
     // 桌面瓦片是深色面板，把控件调色板固定成深色，
@@ -138,17 +142,11 @@ ApplicationWindow {
                 window.visible = app.host_visible()
             }
 
+            // 队列里只剩"新建文件格子"这类所有窗口处理一致的请求；退出 /
+            // 设置 / 搜索由 Rust 直接排到 GUI 线程，不走这个队列。
             var command = app.take_host_command()
             if (command === "new-tile")
                 newTileDialog.open()
-            else if (command.indexOf("new-tile:") === 0)
-                app.open_settings()
-            else if (command === "settings")
-                app.open_settings()
-            else if (command === "search")
-                app.open_search()
-            else if (command === "quit")
-                app.quit_app()
         }
     }
 

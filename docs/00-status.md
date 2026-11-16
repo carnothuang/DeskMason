@@ -635,3 +635,96 @@ cargo clean -p dm-ui（QML 缓存）后重建才生效。clippy 0 警告、138 �
 
 - 新历史外部项目名称扫描零命中；orphan 树 77 文件与旧 HEAD 完全一致。
 - 推送前远端确认：空仓库、无默认分支、SSH 认证正常。
+
+## 深夜第八轮：任务栏彻底消失、输入框恢复可输入、退出与字体两处回归（v0.1.5 / v0.1.6）
+
+### 背景
+
+用户两次反馈同一件事并附截图：瓦片会出现在 dde-dock 任务栏里，且能从任务栏关掉
+（"这是绝对禁止的"），随后又追加"更多瓦片被放到任务栏了……全局只允许托盘图标
+存在"。修完任务栏后，又报了 `设置页面成了乱码`、`退出 DeskMason 无法正确退出`。
+
+### 任务栏图标：`shouldSkip()` 的真规则
+
+反汇编 `dde-shell/org.deepin.ds.dock.taskmanager.so` 的 `dock::X11Window::shouldSkip()`
+（`0x1027c0`）得到两条判定，且**结果在窗口首次出现时就被 `pthread_once` 缓存**：
+
+1. 有 `_NET_WM_STATE_SKIP_TASKBAR` → 跳过；
+2. 否则拿 `_NET_WM_WINDOW_TYPE` 与白名单比对：
+   `DIALOG / UTILITY / COMBO / DESKTOP / DND / DOCK / DROPDOWN_MENU / MENU /
+   NOTIFICATION / POPUP_MENU / SPLASH / TOOLBAR / TOOLTIP`。
+
+我们此前写的是 `_KDE_NET_WM_WINDOW_TYPE_OVERRIDE + _NET_WM_WINDOW_TYPE_NORMAL`，
+两个**都不在白名单里**，只靠 `SKIP_TASKBAR` 一条腿走路；而 `keep_tile_below()`
+每 1s 又把 TYPE 写回 `OVERRIDE+NORMAL`，等于周期性把瓦片送出白名单，Qt 在
+`show()` 时的一次异步重写就足以让 dock 在采样瞬间看到"普通窗口"。
+
+- 瓦片窗口标志改为 `Qt::Tool | Qt::FramelessWindowHint`：Qt 自己就写
+  `_NET_WM_WINDOW_TYPE_UTILITY`（白名单类型），dock 的判定不再依赖运气。
+- 新增 `x11::apply_tile_layer()` 作为**映射前**的唯一属性写入点：
+  TYPE=UTILITY、STATE=`SKIP_TASKBAR/SKIP_PAGER/BELOW`、MOTIF=`[3,33]`（禁关闭）、
+  `_NET_WM_DESKTOP=0xFFFFFFFF`，一次写全。
+- 删掉映射后所有 `setFlag()`（原先映射后切 `WindowDoesNotAcceptFocus` 会触发
+  Qt 异步重写 `_NET_WM_STATE`，正好抹掉 `SKIP_TASKBAR`）。
+
+### 输入框点了不能打字
+
+`WindowDoesNotAcceptFocus` 让 Qt 写出 `WM_HINTS.input = False`，KWin 因此拒绝在
+点击时把键盘焦点交给瓦片（`xdotool windowfocus` 能强制聚焦，证明通道没坏、卡在
+WM_HINTS）。改为：纯展示瓦片照旧 `input=False`，输入型瓦片（待办/随记/天气）
+写 `WM_HINTS.input=True`，由 `apply_tile_layer(…, accepts_input)` 在映射前写死。
+
+### 退出没反应：命令队列被"抢吃"
+
+托盘动作原先统一入队，8 个瓦片窗口每 2s 各弹一条（`VecDeque::pop_front`），
+谁先轮询到就从队列里吃掉；窗口只处理自己认识的分支，于是
+`quit / settings / search` 有机会被一个不认识它的窗口吞掉——退出十次里九次无效。
+
+- 退出 / 打开设置 / 打开搜索改为 **Rust 直接调用**，C++ 侧用
+  `QMetaObject::invokeMethod(qApp, …, Qt::QueuedConnection)` 排到 GUI 线程
+  （`QQmlComponent` 只能在 GUI 线程用，托盘线程直接建窗会崩）。
+- 队列只留 `new-tile` 这类"所有窗口分支一致"的请求，抢吃不再有后果。
+- 实测发现 `QCoreApplication::quit()` 在本进程里**并不能让 `exec()` 返回**
+  （事件循环照常派发事件），因此退出实现为：先礼貌 `quit()`，600ms 未退则
+  `std::_Exit(0)`。布局/待办/随记/偏好都是变更即时落盘，无丢数据风险。
+
+### 设置页"乱码"：其实是方框字体
+
+截图放大后确认是**空心方框**（缺字形），不是编码错乱。成因链：
+
+- Qt Quick Controls 的文字默认跟 **DDE 主题字体族**（本机为 `Source Han Sans SC`，
+  即 `SourceHanSansSC-Regular.otf`，CFF/OTF 轮廓）走；
+- 该字体在这台机器上会**偶发**加载失败，Qt 退化成 `QFontEngineBox`——每个字符
+  都画同样宽度的方框，且 `QFontMetrics::inFont()` 仍返回 true（探测不到）；
+- 纯 `Text`（瓦片）走的是另一条字体解析，所以同一进程里瓦片正常、设置页全框。
+
+处理：
+
+- 启动时 `dm_apply_ui_font()` 逐个候选族实测：既要 `inFont('中')`，又要
+  `horizontalAdvance('i') != horizontalAdvance('W')`（真实字体必然不同宽，方框
+  引擎恒等宽）——两条都过才采用。
+- 候选顺序里 TrueType 轮廓（`Noto Sans CJK SC` / `Noto Sans SC`）优先，CFF/OTF
+  的思源黑体靠后。
+- 设置 / 搜索窗口在 QML 里显式 `font.family: app.ui_font_family()`，不让 Controls
+  再去继承主题字体。
+
+### 验证
+
+- 6 块瓦片属性稳态：`TYPE=UTILITY`、`STATE=SKIP_TASKBAR,SKIP_PAGER,BELOW`、
+  `MOTIF=0x3,0x21`、`depth=32`（透明与圆角正常）；`WM_HINTS.input` 仅
+  待办/随记/天气为 True。
+- 点击待办瓦片后 X 焦点转移到 `DeskMason 待办`，`xdotool type` 文字确实入框。
+- 任务栏 A/B 严格比对（有/无 DeskMason）：图标簇像素级零差异，13 个图标一致，
+  无 DeskMason 图标；托盘 SNI 有 `org.kde.StatusNotifierItem-<pid>-1`。
+- `wmctrl -i -c` 礼貌关闭被拒（窗口数 8 → 8）。
+- 设置页截图：中文、英文、图标全部正常；日志无 QML 报错。
+- 托盘"退出 DeskMason"：进程退出、残留窗口 0。
+- 质量门：`cargo fmt --all -- --check`、`cargo clippy --workspace --all-targets
+  -- -D warnings` 零告警、`cargo test --workspace` **159 passed / 0 failed**。
+
+### 环境残留清理
+
+- `~/.config/autostart/deskmason.desktop` 指向已卸载的 `/usr/bin/deskmason`，
+  已移入回收站（备份 `/tmp/dm-cleanup-backup/deskmason.desktop.bak`）。
+- 无 systemd 用户单元；`~/.config/deskmason`、`~/.local/share/deskmason` 是用户
+  数据（布局/待办/偏好），保留。

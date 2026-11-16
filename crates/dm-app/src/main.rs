@@ -12,6 +12,8 @@ fn main() {
     let engine = QQmlApplicationEngine::new();
 
     dm_ui::apply_light_theme();
+    // 必须早于任何窗口创建：挑一个真的画得出中文的字体族，避免整窗豆腐块。
+    dm_ui::init_ui_font();
     dm_ui::install_translations();
     dm_ui::install_app_translations();
 
