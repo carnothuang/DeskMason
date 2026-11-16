@@ -47,7 +47,11 @@ ApplicationWindow {
     onYChanged: geometryTimer.restart()
     onWidthChanged: geometryTimer.restart()
     onHeightChanged: geometryTimer.restart()
-    onClosing: app.save_geometry(window.x, window.y, window.width, window.height)
+    onClosing: function (close) {
+        app.save_geometry(window.x, window.y, window.width, window.height)
+        // 瓦片是桌面常驻组件，不允许被窗管关闭。退出走托盘。
+        close.accepted = false
+    }
 
     Timer {
         id: geometryTimer

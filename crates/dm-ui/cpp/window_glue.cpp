@@ -28,6 +28,7 @@
 #include <QEvent>
 #include <QMap>
 #include <QElapsedTimer>
+#include <QTimer>
 
 #include <cstdint>
 #include <cstdlib>
@@ -58,6 +59,11 @@ public:
                 dm_focus_window_x11(static_cast<uint64_t>(window->winId()));
             }
         }
+        // 注意：这里不能拦截 QEvent::Close——设置页关闭功能瓦片走
+        // dm_close_tile → window->close()，拦掉会永久失去移除瓦片的能力。
+        // 防外部关闭靠两层：QML onClosing 拒绝 + Motif 提示禁用关闭
+        // （窗管的礼貌协商在 KWin 侧就被拒绝；强杀路径不产生 Close 事件，
+        // 软件层拦不住，只能靠 Motif 让 KWin 不发起强杀）。
         return false;
     }
 };
@@ -141,9 +147,11 @@ extern "C" uint64_t dm_spawn_tile(void *engine_ptr, const char *widget_id,
     // 映射前一律不抢焦点，保证窗管按透明/圆角方式合成。
     window->setFlag(Qt::WindowDoesNotAcceptFocus, true);
     window->setProperty("tileAcceptsFocus", accepts_focus);
-    if (accepts_focus) {
-        dm_install_tile_focus_filter(window);
-    }
+    // 关闭拒绝依赖 QML onClosing，但实测 QML 层并不总能兜住（见下方
+    // TileFocusFilter 的 Close 分支）。这里给所有瓦片统一装上事件过滤器：
+    // 瓦片是桌面常驻组件，任何来源的关闭请求（任务栏/窗管快捷键）都不
+    // 允许销毁窗口，退出统一走托盘菜单。
+    dm_install_tile_focus_filter(window);
 
     // 多屏布局合法：按窗口中心所在的屏绑定 screen，Qt 的 DPI / 弹出层
     // 定位跟随瓦片实际所在的屏。setScreen 可能改写未映射窗口的几何，
@@ -161,11 +169,27 @@ extern "C" uint64_t dm_spawn_tile(void *engine_ptr, const char *widget_id,
 
     // 映射完成后才放开输入瓦片的激活焦点：此时 KWin 已经记住了映射时的
     // 窗口类型，实测运行中改类型不会改变合成方式，外观仍然与其它瓦片一致。
-    // 放开后窗管可以正常激活窗口，待办/随记/天气的输入框恢复原生键盘焦点；
-    // 再把窗口类型写回统一值，避免 6 块瓦片的 EWMH 属性出现两套。
+    // 放开后窗管可以正常激活窗口，待办/随记/天气的输入框恢复原生键盘焦点。
+    //
+    // 关键：Qt 的标志同步是异步的——setFlag(false) 之后 Qt 会在事件循环里
+    // 重写 _NET_WM_STATE 与 _NET_WM_WINDOW_TYPE，把我们映射前写入的
+    // SKIP_TASKBAR/SKIP_PAGER/BELOW 抹掉、类型改成普通 NORMAL，KWin 随即
+    // 把瓦片当普通客户接管：进任务栏、能被 dde-dock"关闭"（关闭天气瓦片
+    // 的现象就来自这里）。立即写回会输给 Qt 的异步重写（竞态），所以用
+    // 单次 QTimer 延迟到 Qt 同步完成之后再恢复 EWMH 属性。
     if (accepts_focus) {
         window->setFlag(Qt::WindowDoesNotAcceptFocus, false);
-        dm_apply_tile_window_type(static_cast<uint64_t>(id));
+        const uint64_t tileId = static_cast<uint64_t>(id);
+        QTimer::singleShot(0, window, [tileId]() {
+            dm_apply_tile_window_type(tileId);
+        });
+        // 兜底：300ms 后再写一次。输入法/窗管仍可能在窗口激活后重写属性。
+        // 注意周期性 keep_below（hostTimer 每 200ms）只恢复 STATE 不恢复
+        // TYPE，而 KWin/任务栏的收录决策主要由 TYPE 驱动，TYPE 必须在这里
+        // 及时写回，不能指望 keep_below 兜底。
+        QTimer::singleShot(300, window, [tileId]() {
+            dm_apply_tile_window_type(tileId);
+        });
     }
     return static_cast<uint64_t>(id);
 }

@@ -116,7 +116,12 @@ impl X11DesktopLayer {
             win,
             atoms.motif_hints,
             atoms.motif_hints,
-            &[2, 0, 0, 0, 0], // 只声明"无边框"
+            // flags=3 (FUNCTIONS|DECORATIONS)；functions=33 =
+            // MWM_FUNC_ALL|MWM_FUNC_CLOSE：Motif 语义是"启用全部函数、
+            // 除了列出的"——移动/缩放保留（拖动与四边缩放依赖
+            // _NET_WM_MOVERESIZE），唯独禁掉关闭，KWin 对用户的关闭
+            // 请求（dde-dock"关闭窗口"）会拒绝而不是强杀窗口。
+            &[3, 33, 0, 0, 0],
         )?;
         conn.change_property32(
             PropMode::REPLACE,
@@ -355,7 +360,7 @@ pub fn apply_below_layer(window_id: u32, title: &str) -> PlatformResult<()> {
         AtomEnum::ATOM,
         &[skip_taskbar, skip_pager, below],
     )?;
-    conn.change_property32(PropMode::REPLACE, win, motif, motif, &[2, 0, 0, 0, 0])?;
+    conn.change_property32(PropMode::REPLACE, win, motif, motif, &[3, 33, 0, 0, 0])?;
     conn.change_property32(
         PropMode::REPLACE,
         win,
@@ -423,7 +428,9 @@ pub fn apply_desktop_layer(window_id: u32, title: &str) -> PlatformResult<()> {
         win,
         atoms.motif_hints,
         atoms.motif_hints,
-        &[2, 0, 0, 0, 0],
+        // flags=3, functions=33 (MWM_FUNC_ALL|MWM_FUNC_CLOSE)：见
+        // DesktopWindow 处的同名注释——唯独禁用关闭，防窗管强杀瓦片。
+        &[3, 33, 0, 0, 0],
     )?;
     conn.change_property32(
         PropMode::REPLACE,
@@ -553,6 +560,29 @@ pub fn keep_tile_below(window_id: u32) -> PlatformResult<()> {
     let skip_taskbar = intern(&conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
     let skip_pager = intern(&conn, "_NET_WM_STATE_SKIP_PAGER")?;
     let below = intern(&conn, "_NET_WM_STATE_BELOW")?;
+    // 顺带重申 TYPE 与 Motif 提示：Qt 的标志同步可能在任意时机（输入框
+    // 激活、输入法弹窗、平台窗口事件）异步重写这三组属性，一次性延迟
+    // 写回覆盖不到所有时机。周期性重申保证任何重写都会在 1 秒内被纠正：
+    // STATE 保持 SKIP_TASKBAR（不进任务栏），TYPE 保持 OVERRIDE（KWin
+    // 透明合成），MOTIF 保持禁关闭（窗管不能强杀瓦片）。
+    let ty = intern(&conn, "_NET_WM_WINDOW_TYPE")?;
+    let override_type = intern(&conn, "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE")?;
+    let normal = intern(&conn, "_NET_WM_WINDOW_TYPE_NORMAL")?;
+    let motif = intern(&conn, "_MOTIF_WM_HINTS")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window_id,
+        ty,
+        AtomEnum::ATOM,
+        &[override_type, normal],
+    )?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window_id,
+        motif,
+        motif,
+        &[3, 33, 0, 0, 0],
+    )?;
     conn.change_property32(
         PropMode::REPLACE,
         window_id,
@@ -599,13 +629,15 @@ pub fn keep_tile_below(window_id: u32) -> PlatformResult<()> {
     Ok(())
 }
 
-/// 把瓦片窗口的 EWMH 窗口类型写回统一值。
+/// 把瓦片窗口的 EWMH 类型、状态与 Motif 提示写回统一值。
 ///
-/// Qt 会在窗口标志变化时重写 `_NET_WM_WINDOW_TYPE`：放行激活焦点的窗口会被
-/// 写成 `_NET_WM_WINDOW_TYPE_DESKTOP`，而不抢焦点的窗口是
-/// `_KDE_NET_WM_WINDOW_TYPE_OVERRIDE` + `_NET_WM_WINDOW_TYPE_NORMAL`。
-/// 后者才是 KWin 按透明/圆角合成的那一类。窗口映射前统一不抢焦点已让窗管
-/// 记住正确类型；映射后放开焦点时再写回一次，保证 6 块瓦片属性一致。
+/// Qt 会在窗口标志变化时异步重写 `_NET_WM_WINDOW_TYPE`、`_NET_WM_STATE`
+/// 与 `_MOTIF_WM_HINTS`：放行激活焦点的瓦片（天气/待办/随记）在映射后
+/// 放开焦点时，这轮同步会把原生写入的三件套（SKIP_TASKBAR/SKIP_PAGER/
+/// BELOW、OVERRIDE+NORMAL、Motif"禁关闭"）全部冲掉——KWin 随即把瓦片
+/// 当普通客户接管：进任务栏、dde-dock 出现"关闭"动作且能强杀窗口
+/// （关闭天气瓦片消失的现象）。必须在 Qt 同步完成**之后**调用本函数
+/// （见 window_glue.cpp 的延迟写回），顺序：STATE → TYPE → MOTIF。
 pub fn apply_tile_window_type(window_id: u32) -> PlatformResult<()> {
     if std::env::var_os("DISPLAY").is_none() {
         return Err(PlatformError::NoX11Display);
@@ -614,12 +646,33 @@ pub fn apply_tile_window_type(window_id: u32) -> PlatformResult<()> {
     let ty = intern(&conn, "_NET_WM_WINDOW_TYPE")?;
     let override_type = intern(&conn, "_KDE_NET_WM_WINDOW_TYPE_OVERRIDE")?;
     let normal = intern(&conn, "_NET_WM_WINDOW_TYPE_NORMAL")?;
+    let state = intern(&conn, "_NET_WM_STATE")?;
+    let skip_taskbar = intern(&conn, "_NET_WM_STATE_SKIP_TASKBAR")?;
+    let skip_pager = intern(&conn, "_NET_WM_STATE_SKIP_PAGER")?;
+    let below = intern(&conn, "_NET_WM_STATE_BELOW")?;
+    let motif = intern(&conn, "_MOTIF_WM_HINTS")?;
+    conn.change_property32(
+        PropMode::REPLACE,
+        window_id,
+        state,
+        AtomEnum::ATOM,
+        &[skip_taskbar, skip_pager, below],
+    )?;
     conn.change_property32(
         PropMode::REPLACE,
         window_id,
         ty,
         AtomEnum::ATOM,
         &[override_type, normal],
+    )?;
+    // 与预映射一致：flags=3, functions=33 (MWM_FUNC_ALL|MWM_FUNC_CLOSE)，
+    // 唯独禁用关闭，防止窗管把瓦片当普通客户强杀。
+    conn.change_property32(
+        PropMode::REPLACE,
+        window_id,
+        motif,
+        motif,
+        &[3, 33, 0, 0, 0],
     )?;
     conn.flush()?;
     Ok(())

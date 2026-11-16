@@ -48,7 +48,13 @@ ApplicationWindow {
     onYChanged: geometryTimer.restart()
     onWidthChanged: geometryTimer.restart()
     onHeightChanged: geometryTimer.restart()
-    onClosing: app.save_geometry(window.x, window.y, window.width, window.height)
+    onClosing: function (close) {
+        app.save_geometry(window.x, window.y, window.width, window.height)
+        // 瓦片是桌面常驻组件，不允许被窗管/任务栏关闭：即使 KWin 曾把
+        // 窗口当普通客户接管（见 window_glue.cpp 的 EWMH 写回说明），
+        // dde-dock 的"关闭"也只会拒绝，不会销毁窗口。退出走托盘。
+        close.accepted = false
+    }
 
     Timer {
         id: geometryTimer
